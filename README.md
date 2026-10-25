@@ -16,6 +16,12 @@ Get both apps from **https://foundationstudioza.github.io/talkee/** or the
   are beta builds and are not code-signed, so Windows asks you to confirm.
 * **Android 8+:** install `Talkee.apk` (allow installs from your browser when asked).
 
+**First run on Windows:** Windows Firewall asks whether to let Talkee use the network. Click
+**Allow access** (private networks is enough). If you dismiss it, Windows quietly blocks Talkee and the
+phone will not connect; remove the block with
+`netsh advfirewall firewall delete rule name="Talkee.exe"` in an Administrator PowerShell, then start
+Talkee again to get the prompt back.
+
 Both apps look for updates on their own. Windows downloads the new version quietly and offers
 *Restart to update* in the tray menu and in the window. Android downloads it and shows an
 *Install* line at the top of the screen; Android always asks you to confirm the install itself.
