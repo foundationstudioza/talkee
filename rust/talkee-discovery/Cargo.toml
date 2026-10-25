@@ -1,0 +1,12 @@
+[package]
+name = "talkee-discovery"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Talkee zero-configuration discovery: advertise and find hosts over mDNS."
+
+[dependencies]
+talkee-core = { workspace = true }
+anyhow = { workspace = true }
+mdns-sd = "0.21"

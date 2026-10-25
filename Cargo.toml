@@ -1,0 +1,57 @@
+[workspace]
+resolver = "2"
+members = [
+    "rust/talkee-proto",
+    "rust/talkee-core",
+    "rust/talkee-vmic",
+    "rust/talkee-discovery",
+    "rust/talkee-crypto",
+    "rust/talkee-store",
+    "rust/talkee-desktop",
+    "rust/talkee-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.80"
+
+[workspace.dependencies]
+talkee-proto = { path = "rust/talkee-proto" }
+talkee-core = { path = "rust/talkee-core" }
+talkee-vmic = { path = "rust/talkee-vmic" }
+talkee-discovery = { path = "rust/talkee-discovery" }
+talkee-crypto = { path = "rust/talkee-crypto" }
+talkee-store = { path = "rust/talkee-store" }
+
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+cpal = "0.18"
+
+# Pairing and payload encryption, used by `talkee host --secure` and the desktop app.
+# Pinned here rather than per-crate so the workspace agrees on one version of each
+# primitive: a second copy of a crypto crate is a second place for a subtle mistake.
+aes-gcm = "0.10"
+hmac = "0.12"
+sha2 = "0.10"
+getrandom = "0.2"
+base64 = "0.22"
+hex = "0.4"
+
+# Drawing the pairing link as a QR code. The link is 132 characters and carries the key, so it
+# gets scanned rather than typed. Deliberately not a dependency of `talkee-crypto`: that crate is
+# the security boundary and keeps rendering out of it. It is also encode-only — there is no
+# decoder anywhere in the product, which is the point.
+qrcode = "0.14"
+
+# Release profile tuned for a real-time audio path:
+# keep codegen units low so the audio thread stays predictable.
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[profile.dev.package."*"]
+opt-level = 2

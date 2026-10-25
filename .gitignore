@@ -1,0 +1,38 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Local build/run logs produced while bringing the audio pipeline up
+*.log
+
+# Flutter (from M3 onwards)
+/app/build/
+/app/.dart_tool/
+/app/.flutter-plugins
+/app/.flutter-plugins-dependencies
+/app/**/GeneratedPluginRegistrant.*
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Local debugging leftovers
+*.pid
+shot.png
+
+# Signing keys and secrets never go in the repository
+*.jks
+*.keystore
+release.pass
+.env
+
+# Installer output
+/installer/Output/
+
+# Flutter / Android build state
+/app/android/.gradle/
+/app/android/.kotlin/
+/app/android/local.properties
+/app/.idea/
+/app/**/*.iml

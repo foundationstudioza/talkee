@@ -1,0 +1,18 @@
+[package]
+name = "talkee-proto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Talkee wire format: audio packet header + control plane messages."
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The payload framing rules in `header.rs` are stated in terms of the AEAD
+# overhead, so the wire format and the crypto crate must not be allowed to
+# disagree about how many bytes that is. Depending on it here (rather than the
+# other way round) keeps `talkee-crypto` free of any wire-format knowledge, and
+# makes the crypto reachable from the two consumers whose Cargo.toml is not ours
+# to extend: `talkee-core` and `talkee-cli`.
+talkee-crypto = { workspace = true }

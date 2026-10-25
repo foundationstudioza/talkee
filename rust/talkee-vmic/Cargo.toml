@@ -1,0 +1,12 @@
+[package]
+name = "talkee-vmic"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Talkee virtual-microphone output: opens a render endpoint that other apps can read as an input."
+
+[dependencies]
+talkee-core = { workspace = true }
+anyhow = { workspace = true }
+cpal = "0.18"

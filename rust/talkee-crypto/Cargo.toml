@@ -1,0 +1,21 @@
+[package]
+name = "talkee-crypto"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Talkee pairing and payload encryption: PSK, HMAC challenge-response, AES-256-GCM."
+
+[dependencies]
+anyhow = { workspace = true }
+aes-gcm = { workspace = true }
+hmac = { workspace = true }
+sha2 = { workspace = true }
+getrandom = { workspace = true }
+base64 = { workspace = true }
+hex = { workspace = true }
+
+# Deliberately no `qrcode` and no `image`: this crate is the security boundary,
+# and a PNG decoder next to the key material is attack surface bought for
+# nothing. Rendering the link as a QR code is the UI's job (the tray app owns
+# `qrcode`); `PairLink::to_uri` hands it the exact string to render.

@@ -1,0 +1,19 @@
+[package]
+name = "talkee-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "What Talkee keeps between runs: the pairing key, protected by the platform keystore."
+
+[dependencies]
+talkee-crypto = { workspace = true }
+anyhow = { workspace = true }
+
+# DPAPI, which is what ties the pairing key's ciphertext to this user on this machine. Two calls,
+# so no wrapper crate; the FFI is isolated in one module.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security_Cryptography",
+] }

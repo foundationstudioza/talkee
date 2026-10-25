@@ -1,0 +1,132 @@
+name: release
+
+# Push a tag like v0.2.0 and this builds the Windows installer and the Android app, then publishes
+# them as a GitHub release together with the update manifest that installed copies check.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set the version from the tag
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "TALKEE_VERSION=$VERSION" >> "$GITHUB_ENV"
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" Cargo.toml
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --workspace --release
+
+      - name: Build
+        run: cargo build --release -p talkee-desktop
+
+      - name: Installer
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\talkee.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: installer/Output/Talkee-Setup-*.exe
+
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set the version from the tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          IFS=. read -r MAJOR MINOR PATCH <<< "${VERSION%%-*}"
+          # Android needs a whole number that only ever goes up.
+          echo "TALKEE_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "TALKEE_CODE=$((MAJOR * 1000000 + MINOR * 1000 + PATCH))" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
+        run: |
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/talkee-release.jks"
+          echo "TALKEE_KEYSTORE=$RUNNER_TEMP/talkee-release.jks" >> "$GITHUB_ENV"
+
+      - name: Test
+        working-directory: app
+        run: flutter test
+
+      - name: Build
+        working-directory: app
+        env:
+          TALKEE_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          TALKEE_KEY_ALIAS: talkee
+          TALKEE_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          flutter build apk --release --target-platform android-arm64 \
+            --build-name "$TALKEE_VERSION" --build-number "$TALKEE_CODE"
+          cp build/app/outputs/flutter-apk/app-release.apk "../Talkee-$TALKEE_VERSION.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: Talkee-*.apk
+
+  publish:
+    needs: [windows, android]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Manifest, checksums and release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          IFS=. read -r MAJOR MINOR PATCH <<< "${VERSION%%-*}"
+          CODE=$((MAJOR * 1000000 + MINOR * 1000 + PATCH))
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          cd dist
+          WIN="Talkee-Setup-$VERSION.exe"
+          APK="Talkee-$VERSION.apk"
+          WIN_SHA=$(sha256sum "$WIN" | cut -d' ' -f1)
+          APK_SHA=$(sha256sum "$APK" | cut -d' ' -f1)
+          # Fixed names the landing page can link to without knowing the version.
+          cp "$WIN" Talkee-Setup.exe
+          cp "$APK" Talkee.apk
+          cat > update.json <<EOF
+          {
+            "version": "$VERSION",
+            "windows": { "url": "$BASE/$WIN", "sha256": "$WIN_SHA" },
+            "android": { "url": "$BASE/$APK", "sha256": "$APK_SHA", "versionCode": $CODE }
+          }
+          EOF
+          sha256sum "$WIN" "$APK" > SHA256SUMS.txt
+          gh release create "$GITHUB_REF_NAME" \
+            "$WIN" "$APK" Talkee-Setup.exe Talkee.apk update.json SHA256SUMS.txt \
+            --title "Talkee $VERSION (beta)" \
+            --notes "Beta build. Not code-signed, so Windows will ask you to confirm the install. Installed copies find this release by themselves."

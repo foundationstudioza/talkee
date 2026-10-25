@@ -1,0 +1,24 @@
+[package]
+name = "talkee-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Talkee M0 command line: probe audio endpoints, host a stream, or fake a phone."
+
+[[bin]]
+name = "talkee"
+path = "src/main.rs"
+
+[dependencies]
+talkee-proto = { workspace = true }
+talkee-core = { workspace = true }
+talkee-vmic = { workspace = true }
+talkee-discovery = { workspace = true }
+talkee-store = { workspace = true }
+qrcode = { workspace = true }
+anyhow = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+
+[dev-dependencies]
+rqrr = "0.10.1"

@@ -1,0 +1,51 @@
+[package]
+name = "talkee-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "The Talkee desktop app: what a user actually runs."
+
+[[bin]]
+name = "talkee-app"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+talkee-proto = { workspace = true }
+talkee-core = { workspace = true }
+talkee-vmic = { workspace = true }
+talkee-discovery = { workspace = true }
+# The pairing key the app shares with `talkee host`: same machine, same store, same key.
+talkee-store = { workspace = true }
+# Drawing the pairing code on the page a phone scans. Same crate the CLI uses for its terminal
+# code, so both front ends encode the identical string the same way.
+qrcode = { workspace = true }
+# Reading the bundled VB-CABLE package. Default features off on purpose: this only ever
+# unpacks VB-Audio's zip, which is deflate, and the full feature set would pull in bzip2,
+# zstd and AES for formats we will never see.
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+# The window. `egui` drawn with OpenGL and nothing else: no browser engine, no web view. Default
+# features off so the Linux windowing backends and the accessibility bridge are not pulled in.
+eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts"] }
+serde_json = { workspace = true }
+# Looking for updates and downloading them. rustls rather than the system TLS so the app has no
+# dependency on what Windows happens to ship.
+ureq = { version = "2", default-features = false, features = ["tls"] }
+sha2 = { workspace = true }
+
+[dev-dependencies]
+
+# The tray icon and its popup menu. This is a Windows-only application, so the
+# Linux feature set (gtk / libappindicator / libxdo) is switched off rather than
+# being resolved into the build graph. `muda` arrives through tray-icon; we do
+# not depend on it directly.
+[target.'cfg(windows)'.dependencies]
+tray-icon = { version = "0.24", default-features = false }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Console",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
