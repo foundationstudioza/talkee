@@ -276,7 +276,21 @@ impl eframe::App for App {
                             }
                         });
 
-                    ui.add_space(16.0);
+                    ui.add_space(14.0);
+                    ui.horizontal(|ui| {
+                        // For a connection that looks fine and carries nothing: drops the phone's
+                        // connection, and it pairs again by itself within a few seconds.
+                        if ui
+                            .add(egui::Button::new(egui::RichText::new("Reconnect phone").color(DIM).size(13.0)).fill(PANEL))
+                            .clicked()
+                        {
+                            let (port, path) = (self.port, format!("/reconnect?t={}", self.token));
+                            thread::spawn(move || {
+                                http(port, "POST", &path);
+                            });
+                        }
+                    });
+                    ui.add_space(8.0);
                     if status.has_code {
                         let label = if open { "Hide pairing code" } else { "Pair a phone" };
                         if ui

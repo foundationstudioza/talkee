@@ -40,7 +40,12 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const POLL_INTERVAL: Duration = Duration::from_millis(150);
 
 /// How long a paired control connection may go quiet before it is let go.
-const IDLE_TIMEOUT: Duration = Duration::from_secs(120);
+///
+/// The phone pings every few seconds, so a connection silent for this long belongs to a phone that
+/// died, left the network or went to sleep. It used to be two minutes, which is how long a PC kept
+/// believing in a phone that had gone — and how long a returning phone could find its old session
+/// still holding the slot.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// How many control connections may be in flight at once.
 ///
@@ -232,7 +237,14 @@ fn handle_pairing(
     let mut echoed: Option<u32> = None;
     let mut told_version = 0u64;
     let mut idle_since = std::time::Instant::now();
+    let reconnects_at_start = controls.reconnect_requests();
     loop {
+        if controls.reconnect_requests() != reconnects_at_start {
+            // Asked to let go of this phone. Closing the connection is the whole message: the phone
+            // sees it end and pairs again.
+            println!("talkee: {peer} was asked to reconnect");
+            break;
+        }
         let version = controls.version();
         if version != told_version {
             told_version = version;

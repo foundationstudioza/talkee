@@ -30,13 +30,17 @@ CloseApplications=yes
 RestartApplications=yes
 
 [Tasks]
+; Both on by default. A microphone that is not running when you sit down is a microphone that does
+; not work, and a tray-only app that was closed by accident needs somewhere obvious to be reopened from.
 Name: "startup"; Description: "Start Talkee when I sign in"; GroupDescription: "Options:"
+Name: "desktopicon"; Description: "Put a Talkee shortcut on the desktop"; GroupDescription: "Options:"
 
 [Files]
 Source: "..\target\release\talkee-app.exe"; DestDir: "{app}"; DestName: "Talkee.exe"; Flags: ignoreversion
 
 [Icons]
 Name: "{userprograms}\Talkee"; Filename: "{app}\Talkee.exe"
+Name: "{userdesktop}\Talkee"; Filename: "{app}\Talkee.exe"; Tasks: desktopicon
 
 [Registry]
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "Talkee"; ValueData: """{app}\Talkee.exe"""; Flags: uninsdeletevalue; Tasks: startup

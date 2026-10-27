@@ -36,20 +36,20 @@ class TalkeeStatus {
   });
 
   factory TalkeeStatus.fromMap(Map<Object?, Object?> map) => TalkeeStatus(
-        state: (map['state'] as String?) ?? 'idle',
-        host: map['host'] as String?,
-        address: map['address'] as String?,
-        source: map['source'] as String?,
-        level: (map['level'] as num?)?.toDouble() ?? 0,
-        packetsSent: (map['packetsSent'] as num?)?.toInt() ?? 0,
-        paired: (map['paired'] as bool?) ?? false,
-        hasLink: (map['hasLink'] as bool?) ?? false,
-        paused: (map['paused'] as bool?) ?? false,
-        noiseSuppression: (map['noiseSuppression'] as bool?) ?? true,
-        echoCancel: (map['echoCancel'] as bool?) ?? true,
-        update: map['update'] as String?,
-        error: map['error'] as String?,
-      );
+    state: (map['state'] as String?) ?? 'idle',
+    host: map['host'] as String?,
+    address: map['address'] as String?,
+    source: map['source'] as String?,
+    level: (map['level'] as num?)?.toDouble() ?? 0,
+    packetsSent: (map['packetsSent'] as num?)?.toInt() ?? 0,
+    paired: (map['paired'] as bool?) ?? false,
+    hasLink: (map['hasLink'] as bool?) ?? false,
+    paused: (map['paused'] as bool?) ?? false,
+    noiseSuppression: (map['noiseSuppression'] as bool?) ?? true,
+    echoCancel: (map['echoCancel'] as bool?) ?? true,
+    update: map['update'] as String?,
+    error: map['error'] as String?,
+  );
 
   /// One of `idle`, `discovering`, `streaming`, `error`.
   final String state;
@@ -152,16 +152,19 @@ class _TalkeeHomeState extends State<TalkeeHome> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _subscription = _statusEvents.receiveBroadcastStream().listen(
-          _onStatus,
-          onError: (_) {
-            // A dropped status stream must not take the app down.
-          },
-        );
+      _onStatus,
+      onError: (_) {
+        // A dropped status stream must not take the app down.
+      },
+    );
     _start();
     // Looks for a newer build now and every few hours while the app is open. Quiet: an update that
     // is found and downloaded shows up as one line at the top of the screen, and nothing else.
     _invoke('checkUpdate');
-    _updateTimer = Timer.periodic(const Duration(hours: 6), (_) => _invoke('checkUpdate'));
+    _updateTimer = Timer.periodic(
+      const Duration(hours: 6),
+      (_) => _invoke('checkUpdate'),
+    );
   }
 
   @override
@@ -251,9 +254,9 @@ class _TalkeeHomeState extends State<TalkeeHome> with WidgetsBindingObserver {
   String get _detail {
     if (!_status.isStreaming) {
       if (_status.state == 'error' && _status.error != null) {
-        return '${_status.error}\nOpen Talkee on your computer to connect.';
+        return '${_status.error}\nOpen Talkee on your computer to connect.\nTap the circle to try again.';
       }
-      return 'Open Talkee on your computer to connect.';
+      return 'Open Talkee on your computer to connect.\nTap the circle to try again.';
     }
     return _paused ? 'Muted' : 'Live';
   }
@@ -264,88 +267,128 @@ class _TalkeeHomeState extends State<TalkeeHome> with WidgetsBindingObserver {
     final accent = !connected
         ? _Palette.searching
         : _paused
-            ? _Palette.failed
-            : _Palette.streaming;
+        ? _Palette.failed
+        : _Palette.streaming;
 
     return Scaffold(
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 32),
-          child: Column(
-            children: [
-              if (_status.update != null) ...[
-                const SizedBox(height: 14),
-                GestureDetector(
-                  onTap: () => _invoke('installUpdate'),
-                  behavior: HitTestBehavior.opaque,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(20),
-                      color: _Palette.streaming.withValues(alpha: 0.12),
-                      border: Border.all(color: _Palette.streaming.withValues(alpha: 0.5)),
-                    ),
-                    child: Text(
-                      'Update ${_status.update} ready · Install',
-                      style: const TextStyle(fontSize: 13, color: _Palette.streaming),
-                    ),
+        child: Stack(
+          children: [
+            // Scan the code again: for a phone whose pairing no longer works — a new PC, a reset key —
+            // where retrying can never succeed. Small and quiet, because most days it is never needed.
+            Align(
+              alignment: Alignment.topRight,
+              child: GestureDetector(
+                onTap: () => Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const PairingScreen(),
                   ),
                 ),
-              ],
-              const Spacer(flex: 3),
-              GestureDetector(
-                onTap: connected ? () => _ask('paused', !_paused) : null,
                 behavior: HitTestBehavior.opaque,
-                child: _Pulse(
-                  level: connected && !_paused ? _status.level : 0,
-                  accent: accent,
-                  icon: _paused ? Icons.mic_off_rounded : Icons.mic_rounded,
+                child: const Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Icon(
+                    Icons.qr_code_scanner_rounded,
+                    color: Colors.white30,
+                    size: 26,
+                  ),
                 ),
               ),
-              const SizedBox(height: 40),
-              Text(
-                _headline,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  fontSize: 28,
-                  fontWeight: FontWeight.w300,
-                  letterSpacing: -0.5,
-                ),
-              ),
-              const SizedBox(height: 10),
-              Text(
-                _detail,
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 14,
-                  height: 1.5,
-                  color: connected ? accent.withValues(alpha: 0.9) : Colors.white38,
-                ),
-              ),
-              const Spacer(flex: 4),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 32),
+              child: Column(
                 children: [
-                  _Switch(
-                    icon: Icons.graphic_eq_rounded,
-                    label: 'Noise',
-                    on: _noise,
-                    enabled: connected,
-                    onTap: () => _ask('noise_suppression', !_noise),
+                  if (_status.update != null) ...[
+                    const SizedBox(height: 14),
+                    GestureDetector(
+                      onTap: () => _invoke('installUpdate'),
+                      behavior: HitTestBehavior.opaque,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 10,
+                        ),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(20),
+                          color: _Palette.streaming.withValues(alpha: 0.12),
+                          border: Border.all(
+                            color: _Palette.streaming.withValues(alpha: 0.5),
+                          ),
+                        ),
+                        child: Text(
+                          'Update ${_status.update} ready · Install',
+                          style: const TextStyle(
+                            fontSize: 13,
+                            color: _Palette.streaming,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                  const Spacer(flex: 3),
+                  GestureDetector(
+                    // Connected, the orb mutes. Not connected, it is the retry button: a person looking at
+                    // "Looking for your PC…" after their phone died wants to say "try now", and the circle
+                    // is the one thing on the screen that looks pressable.
+                    onTap: connected
+                        ? () => _ask('paused', !_paused)
+                        : () => _invoke('reconnect'),
+                    behavior: HitTestBehavior.opaque,
+                    child: _Pulse(
+                      level: connected && !_paused ? _status.level : 0,
+                      accent: accent,
+                      icon: _paused ? Icons.mic_off_rounded : Icons.mic_rounded,
+                    ),
                   ),
-                  const SizedBox(width: 28),
-                  _Switch(
-                    icon: Icons.speaker_phone_rounded,
-                    label: 'Echo',
-                    on: _echo,
-                    enabled: connected,
-                    onTap: () => _ask('echo_cancel', !_echo),
+                  const SizedBox(height: 40),
+                  Text(
+                    _headline,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      fontSize: 28,
+                      fontWeight: FontWeight.w300,
+                      letterSpacing: -0.5,
+                    ),
                   ),
+                  const SizedBox(height: 10),
+                  Text(
+                    _detail,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 14,
+                      height: 1.5,
+                      color: connected
+                          ? accent.withValues(alpha: 0.9)
+                          : Colors.white38,
+                    ),
+                  ),
+                  const Spacer(flex: 4),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      _Switch(
+                        icon: Icons.graphic_eq_rounded,
+                        label: 'Noise',
+                        on: _noise,
+                        enabled: connected,
+                        onTap: () => _ask('noise_suppression', !_noise),
+                      ),
+                      const SizedBox(width: 28),
+                      _Switch(
+                        icon: Icons.speaker_phone_rounded,
+                        label: 'Echo',
+                        on: _echo,
+                        enabled: connected,
+                        onTap: () => _ask('echo_cancel', !_echo),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 36),
                 ],
               ),
-              const SizedBox(height: 36),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -379,7 +422,10 @@ class _Pulse extends StatelessWidget {
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             color: accent.withValues(alpha: 0.12 + intensity * 0.45),
-            border: Border.all(color: accent.withValues(alpha: 0.55), width: 1.5),
+            border: Border.all(
+              color: accent.withValues(alpha: 0.55),
+              width: 1.5,
+            ),
             boxShadow: [
               BoxShadow(
                 color: accent.withValues(alpha: 0.30 * intensity),
@@ -433,12 +479,20 @@ class _Switch extends StatelessWidget {
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: lit ? colour.withValues(alpha: 0.14) : Colors.white10,
-                border: Border.all(color: lit ? colour.withValues(alpha: 0.6) : Colors.white12),
+                border: Border.all(
+                  color: lit ? colour.withValues(alpha: 0.6) : Colors.white12,
+                ),
               ),
               child: Icon(icon, color: colour, size: 24),
             ),
             const SizedBox(height: 8),
-            Text(label, style: TextStyle(fontSize: 12, color: lit ? Colors.white70 : Colors.white30)),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                color: lit ? Colors.white70 : Colors.white30,
+              ),
+            ),
           ],
         ),
       ),
@@ -534,8 +588,8 @@ class _PairingScreenState extends State<PairingScreen> {
   /// controller, so nothing reaches for a platform that is not there.
   MobileScannerController? _controller;
 
-  MobileScannerController get _camera =>
-      _controller ??= MobileScannerController(detectionSpeed: DetectionSpeed.noDuplicates);
+  MobileScannerController get _camera => _controller ??=
+      MobileScannerController(detectionSpeed: DetectionSpeed.noDuplicates);
 
   /// Set while a scan is being handed over, so a burst of frames is not sent twice.
   bool _handling = false;
@@ -566,6 +620,12 @@ class _PairingScreenState extends State<PairingScreen> {
     setState(() => _handling = true);
     try {
       await _methods.invokeMethod<void>('pair', {'link': link});
+      // Opened from the microphone screen, the scanner is a page on top of it: a good scan puts the
+      // person back where they were. As the first-run screen there is nothing to go back to, and the
+      // gate swaps the screen by itself.
+      if (mounted && Navigator.of(context).canPop()) {
+        Navigator.of(context).pop();
+      }
       // No navigation here. The engine reports `paired` on the status stream, the gate swaps the
       // screen, and there is one source of truth for "are we paired" rather than two that can
       // disagree.
@@ -597,6 +657,24 @@ class _PairingScreenState extends State<PairingScreen> {
                 // person sees when the permission was refused.
                 errorBuilder: (context, error) => const SizedBox.shrink(),
               ),
+          if (Navigator.of(context).canPop())
+            SafeArea(
+              child: Align(
+                alignment: Alignment.topLeft,
+                child: GestureDetector(
+                  onTap: () => Navigator.of(context).pop(),
+                  behavior: HitTestBehavior.opaque,
+                  child: const Padding(
+                    padding: EdgeInsets.all(16),
+                    child: Icon(
+                      Icons.close_rounded,
+                      color: Colors.white70,
+                      size: 28,
+                    ),
+                  ),
+                ),
+              ),
+            ),
           // A frame to aim at. Purely visual — the camera reads the whole image — but a bare camera
           // feed gives a person nothing to line the code up with.
           IgnorePointer(
@@ -607,7 +685,8 @@ class _PairingScreenState extends State<PairingScreen> {
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(32),
                   border: Border.all(
-                    color: (_problem == null ? Colors.white : _Palette.failed).withValues(alpha: 0.7),
+                    color: (_problem == null ? Colors.white : _Palette.failed)
+                        .withValues(alpha: 0.7),
                     width: 2,
                   ),
                 ),
@@ -635,7 +714,8 @@ class _Caption extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final text = problem ??
+    final text =
+        problem ??
         (handling
             ? 'Pairing\u2026'
             : 'Point your phone at the code on the screen of your PC');
@@ -653,4 +733,3 @@ class _Caption extends StatelessWidget {
     );
   }
 }
-

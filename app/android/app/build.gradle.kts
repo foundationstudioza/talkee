@@ -52,6 +52,14 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Installs beside the release app instead of over it. A debug build is signed with a
+            // different key, and Android will not update an app with a build signed by another key, so
+            // sharing an id would force an uninstall — and a fresh pairing — every time a developer
+            // tested on a phone that also runs the released app.
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+        }
         release {
             signingConfig = if (releaseKeystore != null) {
                 signingConfigs.getByName("release")

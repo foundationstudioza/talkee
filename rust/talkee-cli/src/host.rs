@@ -370,7 +370,7 @@ pub fn run(args: HostArgs) -> Result<()> {
         None
     } else {
         let instance = discovery::default_instance_name();
-        match discovery::advertise(&instance, srv_port, bound.port(), talkee_proto::PROTOCOL_VERSION) {
+        match discovery::advertise(&instance, srv_port, bound.port(), talkee_proto::PROTOCOL_VERSION, None) {
             Ok(advertisement) => {
                 println!("  discoverable: {}", advertisement.fullname());
                 Some(advertisement)

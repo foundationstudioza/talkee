@@ -29,6 +29,8 @@ struct Inner {
     auto_level: AtomicBool,
     /// Bumped on every real change, so a watcher can ask "anything new?" with one load.
     version: AtomicU64,
+    /// Bumped to ask the control connection to be dropped, so a phone that is stuck reconnects.
+    reconnects: AtomicU64,
     phone: Mutex<Option<String>>,
 }
 
@@ -45,6 +47,7 @@ impl LiveControls {
             echo_cancel: AtomicBool::new(echo_cancel),
             auto_level: AtomicBool::new(auto_level),
             version: AtomicU64::new(1),
+            reconnects: AtomicU64::new(0),
             phone: Mutex::new(None),
         }))
     }
@@ -86,6 +89,17 @@ impl LiveControls {
         self.0.version.load(Ordering::Acquire)
     }
 
+    /// Asks for the phone's connection to be dropped. The phone notices within a moment and pairs
+    /// again from scratch, which is the cure for a connection that looks fine and carries nothing.
+    pub fn request_reconnect(&self) {
+        self.0.reconnects.fetch_add(1, Ordering::Release);
+    }
+
+    /// Increases each time [`LiveControls::request_reconnect`] is called.
+    pub fn reconnect_requests(&self) -> u64 {
+        self.0.reconnects.load(Ordering::Acquire)
+    }
+
     /// Records which phone is connected, or none.
     pub fn set_phone(&self, name: Option<String>) {
         if let Ok(mut held) = self.0.phone.lock() {
@@ -120,5 +134,14 @@ mod tests {
         let b = a.clone();
         b.toggle(Setting::NoiseSuppression);
         assert!(a.get(Setting::NoiseSuppression));
+    }
+
+    #[test]
+    fn a_reconnect_request_is_counted_and_shared() {
+        let a = LiveControls::new(true, true, true);
+        let b = a.clone();
+        let before = a.reconnect_requests();
+        b.request_reconnect();
+        assert_eq!(a.reconnect_requests(), before + 1);
     }
 }

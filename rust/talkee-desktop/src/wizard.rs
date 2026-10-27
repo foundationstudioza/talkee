@@ -289,6 +289,15 @@ fn answer(mut stream: TcpStream, shared: &Arc<Shared>) -> Result<()> {
         ("POST", "/set") => change_setting(shared, query),
         ("GET", "/link") => read_link(shared, query),
         ("POST", "/update") => start_update(shared, query),
+        ("POST", "/reconnect") => {
+            let token = query.split('&').find_map(|pair| pair.strip_prefix("t=")).unwrap_or("");
+            if token != shared.token {
+                ("403 Forbidden", "text/plain; charset=utf-8", "bad token".to_string())
+            } else {
+                shared.controls.request_reconnect();
+                ("200 OK", "application/json", "{}".to_string())
+            }
+        }
         ("GET" | "POST", _) => (
             "404 Not Found",
             "text/plain; charset=utf-8",

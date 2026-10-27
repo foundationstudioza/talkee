@@ -66,6 +66,11 @@ class TalkeePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventChanne
                 result.success(null)
             }
             "status" -> result.success(TalkeeEngine.status())
+            // Drop the connection and pair again now. The retry tap and the "reconnect" control.
+            "reconnect" -> {
+                TalkeeEngine.reconnectNow(context)
+                result.success(null)
+            }
             // Look for a newer build. Quiet: the answer arrives in the status stream.
             "checkUpdate" -> {
                 Updater.check(context)

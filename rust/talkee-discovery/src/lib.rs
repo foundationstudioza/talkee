@@ -40,6 +40,12 @@ pub mod txt {
     pub const VERSION: &str = "v";
     /// Human-readable machine name, for when there is more than one host.
     pub const NAME: &str = "n";
+    /// The short fingerprint of this host's pairing key — the same `fpid` the pairing code carries.
+    ///
+    /// It lets a phone that already holds a pairing find *its* PC again after the PC's address has
+    /// changed, without a new scan. It is a label, not a credential: the phone still has to prove it
+    /// holds the key before the PC accepts anything.
+    pub const FINGERPRINT: &str = "fp";
 }
 
 /// A Talkee host found on the network.
@@ -172,6 +178,7 @@ pub fn advertise(
     control_port: u16,
     audio_port: u16,
     protocol_version: u8,
+    fingerprint: Option<&str>,
 ) -> Result<Advertisement> {
     let daemon =
         ServiceDaemon::new().map_err(|e| anyhow!("could not start the mDNS daemon: {e}"))?;
@@ -204,11 +211,14 @@ pub fn advertise(
     // temporary.
     let audio_port_text = audio_port.to_string();
     let version_text = protocol_version.to_string();
-    let properties = [
+    let mut properties = vec![
         (txt::NAME, instance),
         (txt::AUDIO_PORT, audio_port_text.as_str()),
         (txt::VERSION, version_text.as_str()),
     ];
+    if let Some(fingerprint) = fingerprint {
+        properties.push((txt::FINGERPRINT, fingerprint));
+    }
 
     let host_name = format!("{}.local.", sanitize_host_label(instance));
     let info = ServiceInfo::new(
@@ -406,7 +416,7 @@ mod tests {
     fn live_advertise_then_discover_round_trip() {
         let instance = "Talkee live test";
         let advertisement =
-            advertise(instance, 47_800, 47_801, 1).expect("advertising needs a LAN address");
+            advertise(instance, 47_800, 47_801, 1, None).expect("advertising needs a LAN address");
         assert!(advertisement.fullname().contains(SERVICE_TYPE));
 
         let hosts = discover(Duration::from_secs(5)).expect("browsing should start");

@@ -32,6 +32,8 @@ pub enum Action {
     GetCable,
     /// Show the code a phone scans in order to pair.
     PairPhone,
+    /// Drop the phone's connection so it pairs again.
+    Reconnect,
     /// Install the update that has been downloaded.
     InstallUpdate,
     /// Shut the app down.
@@ -85,6 +87,7 @@ pub struct Tray {
     /// "Up to date", "Downloading…" or "Restart to update". The only item whose enabled state and
     /// words both follow the updater.
     update_item: MenuItem,
+    reconnect_item: MenuItem,
     last_update_text: String,
     /// The way out of the first-run problem: no virtual microphone, and no idea where to get
     /// one. Enabled only while there is genuinely nothing to play into.
@@ -217,6 +220,7 @@ impl Tray {
             CheckMenuItem::new("Auto level", true, controls.get(Setting::AutoLevel), None);
         let update_text = update_text(&crate::update::State::Current);
         let update_item = MenuItem::new(update_text.clone(), false, None);
+        let reconnect_item = MenuItem::new("Reconnect phone", true, None);
         let separator_after_phone = PredefinedMenuItem::separator();
         let separator_after_switches = PredefinedMenuItem::separator();
         // Enabled only when it is the answer to the question the user actually has. Greyed
@@ -244,6 +248,7 @@ impl Tray {
             &level_item,
             &separator_after_switches,
             &pair_item,
+            &reconnect_item,
             &cable_item,
             &update_item,
             &separator_before_quit,
@@ -270,6 +275,7 @@ impl Tray {
             level_item,
             last_phone: phone,
             update_item,
+            reconnect_item,
             last_update_text: update_text,
             _separator_after_phone: separator_after_phone,
             _separator_after_switches: separator_after_switches,
@@ -361,6 +367,8 @@ impl Tray {
                 actions.push(Action::Quit);
             } else if event.id() == self.cable_item.id() {
                 actions.push(Action::GetCable);
+            } else if event.id() == self.reconnect_item.id() {
+                actions.push(Action::Reconnect);
             } else if event.id() == self.update_item.id() {
                 actions.push(Action::InstallUpdate);
             } else if event.id() == self._pair_item.id() {

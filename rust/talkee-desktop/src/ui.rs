@@ -97,6 +97,8 @@ pub enum UiAction {
     GetCable,
     /// Show the code a phone scans in order to pair.
     PairPhone,
+    /// Drop the phone's connection so it pairs again.
+    Reconnect,
     /// Install the downloaded update.
     InstallUpdate,
     /// Shut the app down.
@@ -174,6 +176,7 @@ impl Ui {
                     tray::Action::Set(setting, value) => UiAction::Set(setting, value),
                     tray::Action::GetCable => UiAction::GetCable,
                     tray::Action::PairPhone => UiAction::PairPhone,
+                    tray::Action::Reconnect => UiAction::Reconnect,
                     tray::Action::InstallUpdate => UiAction::InstallUpdate,
                     tray::Action::Quit => UiAction::Quit,
                 })

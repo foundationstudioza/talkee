@@ -131,3 +131,27 @@ class PairingTests {
         }
     }
 }
+
+class PairLinkRebuildTests {
+    private val original =
+        "talkee://pair?v=1&h=192.168.0.24&p=47800&fpid=298fbbd2" +
+            "&name=Talkee%20on%20DESKTOP-EXAMPLE&k=QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVowMTIzNDU"
+
+    @org.junit.Test
+    fun a_link_written_back_out_reads_back_the_same() {
+        val parsed = PairLink.parse(original)!!
+        val again = PairLink.parse(parsed.toUri())
+        org.junit.Assert.assertEquals(parsed, again)
+    }
+
+    @org.junit.Test
+    fun a_moved_pc_changes_only_the_address() {
+        val parsed = PairLink.parse(original)!!
+        val moved = PairLink.parse(parsed.withHost("192.168.0.31").toUri())!!
+        org.junit.Assert.assertEquals("192.168.0.31", moved.host)
+        org.junit.Assert.assertEquals(parsed.name, moved.name)
+        org.junit.Assert.assertEquals(parsed.fingerprint, moved.fingerprint)
+        org.junit.Assert.assertArrayEquals(parsed.key, moved.key)
+        org.junit.Assert.assertEquals(parsed.controlPort, moved.controlPort)
+    }
+}

@@ -46,6 +46,12 @@ object Control {
     /** Bytes of session id. Fresh for every connection, and covered by the proof. */
     private const val SESSION_ID_LEN = 4
 
+    /** How often the phone pings the PC while paired. */
+    private const val PING_EVERY_MS = 5_000L
+
+    /** Silence from the PC for this long means it is gone. Three pings' worth, so one lost packet is not. */
+    private const val DEAD_AFTER_MS = 15_000
+
     /** The encoding the host asked for. */
     data class Config(
         val sampleRate: Int,
@@ -102,9 +108,24 @@ object Control {
          * stream flips [lost].
          */
         internal fun watch(onState: (paused: Boolean, noise: Boolean, echo: Boolean) -> Unit) {
+            // Tells the PC this phone is still there, and gets an answer that proves the PC is. Without
+            // this a phone that dies (or a PC that sleeps) is only noticed minutes later, by whichever
+            // side next tries to say something. The PC echoes every ping, so silence for longer than
+            // [DEAD_AFTER_MS] means the other end is gone.
             Thread({
                 try {
-                    socket.soTimeout = 0
+                    while (!lost && !socket.isClosed) {
+                        Thread.sleep(PING_EVERY_MS)
+                        send(JSONObject().put("type", "PING").put("ts", (System.nanoTime() / 1_000_000L).toInt() and 0x7fffffff))
+                    }
+                } catch (_: Exception) {
+                    // The watcher below notices the same failure and flips [lost].
+                }
+            }, "talkee-control-ping").apply { isDaemon = true }.start()
+
+            Thread({
+                try {
+                    socket.soTimeout = DEAD_AFTER_MS
                     while (true) {
                         val line = input.readLine() ?: break
                         val message = try { JSONObject(line) } catch (_: Exception) { continue }

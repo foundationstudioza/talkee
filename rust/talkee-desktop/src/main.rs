@@ -39,6 +39,7 @@ mod pairing;
 mod setup;
 #[cfg(windows)]
 mod shell;
+mod single;
 mod state;
 #[cfg(windows)]
 mod tray;
@@ -300,6 +301,7 @@ fn run(args: Args) -> Result<()> {
     let updater = update::Updater::start(!args.no_update_check);
     if let Some(wizard) = wizard.as_ref() {
         wizard.set_updater(updater.clone());
+        single::announce(wizard.port(), wizard.token());
     }
     let mut ui = Ui::new(&first.reading, first.stopped, first.hint.as_deref(), args.tray, &controls);
     if let Some(reason) = ui.headless_reason() {
@@ -341,6 +343,10 @@ fn run(args: Args) -> Result<()> {
                 UiAction::Set(setting, value) => {
                     say(started, &format!("menu: {setting:?} -> {value}"));
                     controls.set(setting, value);
+                }
+                UiAction::Reconnect => {
+                    say(started, "menu: Reconnect phone");
+                    controls.request_reconnect();
                 }
                 UiAction::InstallUpdate => {
                     say(started, "menu: installing the update");
@@ -444,6 +450,10 @@ fn main() -> ExitCode {
     #[cfg(windows)]
     if argv.first().map(String::as_str) == Some("--window") {
         let _ = logging::init(false);
+        // One window. A second request to open it just does nothing: the first is already on screen.
+        if !single::acquire(r"Local\TalkeeWindow") {
+            return ExitCode::SUCCESS;
+        }
         let (Some(port), Some(token)) = (
             argv.get(1).and_then(|p| p.parse::<u16>().ok()),
             argv.get(2).cloned(),
@@ -466,6 +476,19 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(Command::Run(args)) => match {
+            // Already running? Open its window and leave, instead of fighting it for the ports and
+            // adding a second, dead icon to the tray.
+            #[cfg(windows)]
+            if !single::acquire(r"Local\TalkeeApp") {
+                if let (Some((port, token)), Ok(exe)) = (single::running_window(), std::env::current_exe()) {
+                    let _ = std::process::Command::new(exe)
+                        .arg("--window")
+                        .arg(port.to_string())
+                        .arg(token)
+                        .spawn();
+                }
+                return ExitCode::SUCCESS;
+            }
             let log = logging::init(args.console);
             println!("talkee-app: logging to {log}");
             run(*args)

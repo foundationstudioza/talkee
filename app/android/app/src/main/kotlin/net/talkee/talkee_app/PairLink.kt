@@ -37,6 +37,21 @@ data class PairLink(
     /** The address the audio datagrams go to. */
     val audioPort: Int get() = controlPort + 1
 
+    /** This link pointing at a different address, for a PC that has moved. Everything else stays. */
+    fun withHost(newHost: String): PairLink = copy(host = newHost)
+
+    /**
+     * The `talkee://pair?...` text this link was read from, so it can be stored again.
+     *
+     * The key is written back as base64url with no padding, exactly as the PC wrote it, and the name
+     * is percent-encoded; [parse] reads both straight back.
+     */
+    fun toUri(): String {
+        val keyText = Base64.getUrlEncoder().withoutPadding().encodeToString(key)
+        val nameText = java.net.URLEncoder.encode(name, "UTF-8").replace("+", "%20")
+        return "talkee://pair?v=1&h=$host&p=$controlPort&fpid=$fingerprint&name=$nameText&k=$keyText"
+    }
+
     companion object {
         /** Every link starts with this. */
         private const val PREFIX = "talkee://pair"

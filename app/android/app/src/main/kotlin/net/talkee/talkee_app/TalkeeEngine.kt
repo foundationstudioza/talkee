@@ -226,20 +226,59 @@ object TalkeeEngine {
      *
      * Runs on `talkee-connect`. Never call it from the main thread.
      */
-    private fun retryLink(link: PairLink) {
+    private fun retryLink(initial: PairLink) {
+        var current = initial
+        var failures = 0
+        wake.drainPermits()
         while (running.get()) {
-            if (pairAndStream(link)) {
+            if (pairAndStream(current)) {
                 return
+            }
+            failures++
+            // Two misses in a row and the address itself may be what is wrong: routers hand them out
+            // afresh, so look for the PC by its key's fingerprint and follow it to where it is now.
+            if (failures >= 2) {
+                val context = appContext
+                val moved = if (context != null) HostFinder.find(context, current.fingerprint) else null
+                val address = moved?.hostAddress
+                if (address != null && address != current.host) {
+                    Log.i(TAG, "the PC moved from ${current.host} to $address")
+                    current = current.withHost(address)
+                    PairingStore.save(context!!, current.toUri())
+                    this.link = current
+                    failures = 0
+                    continue
+                }
             }
             state = STATE_DISCOVERING
             hostLabel = null
             hostAddress = null
             try {
-                Thread.sleep(RETRY_INTERVAL_MS)
+                // Woken early by [reconnectNow], so a tap on "retry" tries straight away.
+                wake.tryAcquire(RETRY_INTERVAL_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
             } catch (_: InterruptedException) {
                 return
             }
         }
+    }
+
+    /** Wakes the retry loop out of its pause. */
+    private val wake = java.util.concurrent.Semaphore(0)
+
+    /**
+     * Drops whatever connection there is and pairs again, now.
+     *
+     * For a connection that looks alive and carries nothing, and for the "try again" tap: it does what
+     * the loop would have done on its own a few seconds later, without the wait. Starts the engine if
+     * it is not running.
+     */
+    fun reconnectNow(context: Context) {
+        if (!running.get()) {
+            CaptureService.start(context)
+            return
+        }
+        pairing?.connection?.close()
+        wake.release()
     }
 
     /** Stops streaming and discovery. Safe to call when already stopped. */

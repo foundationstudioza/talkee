@@ -483,6 +483,9 @@ struct PairingChannel {
     sessions: SharedSession,
     /// The link a phone scans. Held so the wizard can be handed it again without rebuilding it.
     link: String,
+    /// The key's short fingerprint, advertised so a phone can find this PC again if its address
+    /// changes.
+    fingerprint: String,
     /// What to say about the key: new, reused, or replaced.
     note: String,
 }
@@ -655,6 +658,7 @@ impl Engine {
         self.pairing = Some(PairingChannel {
             sessions,
             link: link.to_uri(),
+            fingerprint: link.fingerprint.clone(),
             note: note.clone(),
         });
         Ok(note)
@@ -749,6 +753,7 @@ impl Engine {
                 bound.port(),
                 bound.port(),
                 talkee_proto::PROTOCOL_VERSION,
+                self.pairing.as_ref().map(|p| p.fingerprint.as_str()),
             ) {
                 Ok(advertisement) => (Some(advertisement), None),
                 Err(e) => (None, Some(format!("{e:#}"))),
@@ -1022,6 +1027,7 @@ fn a_failing_start_is_retried_on_an_interval_rather_than_every_tick() {
         engine.pairing = Some(PairingChannel {
             sessions: SharedSession::new(),
             link: "talkee://pair?v=1&h=127.0.0.1&p=47800&k=AA".to_string(),
+            fingerprint: "00000000".to_string(),
             note: "test".to_string(),
         });
         engine.started_attempting();
