@@ -79,6 +79,12 @@ struct Status {
     problem: String,
     /// The version of an update that is downloaded and waiting, or empty.
     update: String,
+    /// A virtual microphone exists to play into.
+    cable: bool,
+    /// `allowed`, `blocked`, `not-asked` or `unknown`.
+    firewall: String,
+    /// The setup guide has been dismissed.
+    guide_done: bool,
 }
 
 impl Status {
@@ -102,6 +108,9 @@ impl Status {
             phone: text("phone"),
             problem: text("problem"),
             update: text("update"),
+            cable: flag("cable"),
+            firewall: text("firewall"),
+            guide_done: flag("guideDone"),
         })
     }
 }
@@ -238,6 +247,16 @@ impl eframe::App for App {
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     header(ui, &status);
                     ui.add_space(10.0);
+                    if let Some(action) = setup_card(ui, &status) {
+                        let (port, path) = match action {
+                            SetupAction::FixFirewall => (self.port, format!("/firewall-fix?t={}", self.token)),
+                            SetupAction::Done => (self.port, format!("/set?k=guide&v=1&t={}", self.token)),
+                            SetupAction::Reopen => (self.port, format!("/set?k=guide&v=0&t={}", self.token)),
+                        };
+                        thread::spawn(move || {
+                            http(port, "POST", &path);
+                        });
+                    }
                     if !status.update.is_empty() && update_banner(ui, &status.update) {
                         let (port, path) = (self.port, format!("/update?t={}", self.token));
                         thread::spawn(move || {
@@ -311,16 +330,147 @@ impl eframe::App for App {
                         }
                     }
                     ui.add_space(18.0);
-                    ui.vertical_centered(|ui| {
-                        ui.label(
-                            egui::RichText::new("In Discord, Zoom or OBS, choose the microphone \"CABLE Output\"")
-                                .color(FAINT)
-                                .size(12.0),
-                        );
-                    });
+                    if status.guide_done {
+                        ui.vertical_centered(|ui| {
+                            if ui
+                                .add(egui::Label::new(egui::RichText::new("Show the setup guide").color(FAINT).size(12.0)).sense(Sense::click()))
+                                .clicked()
+                            {
+                                let (port, path) = (self.port, format!("/set?k=guide&v=0&t={}", self.token));
+                                thread::spawn(move || {
+                                    http(port, "POST", &path);
+                                });
+                            }
+                        });
+                    }
                 });
             });
     }
+}
+
+/// What the setup card asks for.
+enum SetupAction {
+    /// Repair the firewall rules (Windows asks for permission).
+    FixFirewall,
+    /// Hide the guide.
+    Done,
+    /// Show it again.
+    Reopen,
+}
+
+/// One line of the checklist: a mark, a title, and what to do about it.
+fn step(ui: &mut egui::Ui, mark: &str, colour: Color32, title: &str, detail: &str) {
+    ui.horizontal_top(|ui| {
+        // Drawn rather than typed: the built-in font has no check mark, and a missing glyph shows as
+        // an empty box — which reads as "not done" on the one line that means "done".
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(14.0, 20.0), Sense::hover());
+        let centre = Pos2::new(rect.center().x, rect.top() + 10.0);
+        match mark {
+            "•" => {
+                ui.painter().circle_stroke(centre, 4.5, Stroke::new(1.5_f32, colour));
+            }
+            _ => {
+                ui.painter().circle_filled(centre, 5.0, colour);
+            }
+        }
+        ui.vertical(|ui| {
+            ui.label(egui::RichText::new(title).size(13.5));
+            if !detail.is_empty() {
+                ui.label(egui::RichText::new(detail).color(DIM).size(12.0));
+            }
+        });
+    });
+    ui.add_space(6.0);
+}
+
+/// The first-run checklist.
+///
+/// Shown until the person says they are done, and again at any time a step goes wrong — a firewall
+/// that has started blocking, a virtual microphone that has vanished — because those are the moments
+/// the guide is for. Each step says whether it is fine; the last is the one the app cannot check, which
+/// is choosing the microphone in the other program, so it has the name ready to copy.
+fn setup_card(ui: &mut egui::Ui, status: &Status) -> Option<SetupAction> {
+    let blocked = status.firewall == "blocked";
+    let problem = blocked || !status.cable;
+    if status.guide_done && !problem {
+        return None;
+    }
+    let mut action = None;
+    Frame::default()
+        .fill(PANEL)
+        .stroke(Stroke::new(1.0_f32, if problem { AMBER.gamma_multiply(0.5) } else { LINE }))
+        .corner_radius(CornerRadius::same(14))
+        .inner_margin(Margin::symmetric(16, 14))
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new("Set up").size(15.0).strong());
+            ui.add_space(8.0);
+
+            if status.cable {
+                step(ui, "✓", GREEN, "Virtual microphone installed", "");
+            } else {
+                step(ui, "!", AMBER, "No virtual microphone", "Choose “Install VB-CABLE” in the tray menu, then restart Windows.");
+            }
+
+            match status.firewall.as_str() {
+                "allowed" => step(ui, "✓", GREEN, "Windows lets your phone reach Talkee", ""),
+                "blocked" => {
+                    step(
+                        ui,
+                        "!",
+                        AMBER,
+                        "Windows is blocking Talkee",
+                        "Your phone cannot connect until this is fixed. It usually means the permission prompt was dismissed.",
+                    );
+                    if ui
+                        .add(egui::Button::new(egui::RichText::new("Fix it (Windows will ask permission)").color(BG).size(12.5)).fill(AMBER))
+                        .clicked()
+                    {
+                        action = Some(SetupAction::FixFirewall);
+                    }
+                    ui.add_space(6.0);
+                }
+                _ => step(
+                    ui,
+                    "•",
+                    DIM,
+                    "Allow Talkee through Windows Firewall",
+                    "When Windows asks, click “Allow access” (private networks is enough).",
+                ),
+            }
+
+            if status.paired {
+                step(ui, "✓", GREEN, "Phone paired", "");
+            } else {
+                step(ui, "•", DIM, "Pair your phone", "Open Talkee on your phone and scan the code below.");
+            }
+
+            step(
+                ui,
+                "•",
+                DIM,
+                "Choose the microphone in your apps",
+                "In Discord, Zoom, OBS or Claude, pick the microphone named:",
+            );
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("CABLE Output").monospace().size(13.0));
+                if ui.add(egui::Button::new(egui::RichText::new("Copy").size(12.0).color(DIM)).fill(BG)).clicked() {
+                    ui.ctx().copy_text("CABLE Output".to_string());
+                }
+            });
+            ui.add_space(10.0);
+            if status.guide_done {
+                if ui.add(egui::Button::new(egui::RichText::new("Show later").size(12.0).color(DIM)).fill(BG)).clicked() {
+                    action = Some(SetupAction::Reopen);
+                }
+            } else if ui
+                .add(egui::Button::new(egui::RichText::new("I've done this").size(12.5).color(BG)).fill(GREEN))
+                .clicked()
+            {
+                action = Some(SetupAction::Done);
+            }
+        });
+    ui.add_space(12.0);
+    action
 }
 
 /// A quiet strip offering the downloaded update. Returns true when it was clicked.

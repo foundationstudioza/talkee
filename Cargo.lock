@@ -2829,6 +2829,7 @@ name = "talkee-desktop"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "eframe",
  "qrcode",
  "serde_json",

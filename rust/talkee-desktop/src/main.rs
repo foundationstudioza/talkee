@@ -30,6 +30,7 @@
 
 mod args;
 mod engine;
+mod firewall;
 mod icon;
 mod logging;
 mod message_pump;
@@ -39,6 +40,7 @@ mod pairing;
 mod setup;
 #[cfg(windows)]
 mod shell;
+mod settings;
 mod single;
 mod state;
 #[cfg(windows)]
@@ -297,6 +299,40 @@ fn run(args: Args) -> Result<()> {
 
     let first = engine.tick();
     let controls = engine.controls();
+    // The switches as they were left. A flag given on the command line beats what was saved, because
+    // typing it was a deliberate act for this run.
+    let saved = settings::load();
+    controls.set(
+        talkee_core::live::Setting::NoiseSuppression,
+        saved.noise && !args.no_noise_suppression,
+    );
+    controls.set(
+        talkee_core::live::Setting::EchoCancel,
+        saved.echo && !args.no_echo_cancel,
+    );
+    controls.set(talkee_core::live::Setting::AutoLevel, saved.auto_level);
+    controls.set(talkee_core::live::Setting::Paused, saved.paused);
+    controls.set(talkee_core::live::Setting::GuideDone, saved.guide_done);
+    let mut saved_version = controls.version();
+    let mut last_firewall = firewall::State::Unknown;
+    if saved.paused {
+        say(started, "settings : starting muted, as it was left");
+    }
+    // Asks the firewall what it thinks of this program, now and then. `netsh` takes a second or two,
+    // so it runs on its own thread: often while a person is still setting up (the answer changes the
+    // moment they click Allow), rarely once it says allowed.
+    let firewall_state = std::sync::Arc::new(std::sync::Mutex::new(firewall::State::Unknown));
+    {
+        let shared = std::sync::Arc::clone(&firewall_state);
+        let _ = thread::Builder::new().name("talkee-firewall".into()).spawn(move || loop {
+            let state = firewall::check();
+            if let Ok(mut held) = shared.lock() {
+                *held = state;
+            }
+            let pause = if state == firewall::State::Allowed { 600 } else { 10 };
+            thread::sleep(Duration::from_secs(pause));
+        });
+    }
     // Looks for a newer release in the background and fetches it quietly. See `update`.
     let updater = update::Updater::start(!args.no_update_check);
     if let Some(wizard) = wizard.as_ref() {
@@ -415,6 +451,28 @@ fn run(args: Args) -> Result<()> {
         }
 
         ui.update(&status, &controls, &updater.state())?;
+
+        // Remember the switches when one has changed. Compared by version, so this is one load per
+        // tick and a file write only when something actually moved.
+        if controls.version() != saved_version {
+            saved_version = controls.version();
+            settings::save(settings::Saved {
+                noise: controls.get(talkee_core::live::Setting::NoiseSuppression),
+                echo: controls.get(talkee_core::live::Setting::EchoCancel),
+                auto_level: controls.get(talkee_core::live::Setting::AutoLevel),
+                paused: controls.get(talkee_core::live::Setting::Paused),
+                guide_done: controls.get(talkee_core::live::Setting::GuideDone),
+            });
+        }
+        if let Ok(state) = firewall_state.lock() {
+            if let Some(wizard) = wizard.as_ref() {
+                wizard.set_firewall(*state);
+            }
+            if *state != last_firewall {
+                last_firewall = *state;
+                say(started, &format!("firewall : {}", state.as_str()));
+            }
+        }
         last = status;
 
         if let Some(limit) = args.exit_after {

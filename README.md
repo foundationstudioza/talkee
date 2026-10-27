@@ -26,6 +26,11 @@ Both apps look for updates on their own. Windows downloads the new version quiet
 *Restart to update* in the tray menu and in the window. Android downloads it and shows an
 *Install* line at the top of the screen; Android always asks you to confirm the install itself.
 
+The switches (noise suppression, echo cancellation, auto level, mute) are remembered between runs in
+`%APPDATA%\Talkee\settings.json`. The window opens with a short **setup guide** that checks the virtual
+microphone, whether Windows Firewall is blocking Talkee (with a one-click fix that asks Windows for
+permission), whether a phone is paired, and shows the name to pick in other apps: `CABLE Output`.
+
 The desktop app runs from the tray with no console window; its log is
 `%APPDATA%\Talkee	alkee.log`. Start it with `--console` to watch the log live, `--no-update-check`
 to skip update checks, and `--help` for the rest.

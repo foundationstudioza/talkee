@@ -19,6 +19,9 @@ pub enum Setting {
     EchoCancel,
     /// Lifting a quiet phone toward a usable level.
     AutoLevel,
+    /// The first-run setup guide has been dismissed. Not a switch the phone cares about; it lives here
+    /// so it is saved with the others and every surface agrees on it.
+    GuideDone,
 }
 
 #[derive(Debug)]
@@ -27,6 +30,7 @@ struct Inner {
     noise_suppression: AtomicBool,
     echo_cancel: AtomicBool,
     auto_level: AtomicBool,
+    guide_done: AtomicBool,
     /// Bumped on every real change, so a watcher can ask "anything new?" with one load.
     version: AtomicU64,
     /// Bumped to ask the control connection to be dropped, so a phone that is stuck reconnects.
@@ -46,6 +50,7 @@ impl LiveControls {
             noise_suppression: AtomicBool::new(noise_suppression),
             echo_cancel: AtomicBool::new(echo_cancel),
             auto_level: AtomicBool::new(auto_level),
+            guide_done: AtomicBool::new(false),
             version: AtomicU64::new(1),
             reconnects: AtomicU64::new(0),
             phone: Mutex::new(None),
@@ -58,6 +63,7 @@ impl LiveControls {
             Setting::NoiseSuppression => &self.0.noise_suppression,
             Setting::EchoCancel => &self.0.echo_cancel,
             Setting::AutoLevel => &self.0.auto_level,
+            Setting::GuideDone => &self.0.guide_done,
         }
     }
 

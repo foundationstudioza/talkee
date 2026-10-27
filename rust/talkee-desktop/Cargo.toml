@@ -34,6 +34,8 @@ serde_json = { workspace = true }
 # dependency on what Windows happens to ship.
 ureq = { version = "2", default-features = false, features = ["tls"] }
 sha2 = { workspace = true }
+# Encoding the firewall repair for PowerShell. See `firewall`.
+base64 = { workspace = true }
 
 [dev-dependencies]
 

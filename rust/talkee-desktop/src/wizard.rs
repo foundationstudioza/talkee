@@ -122,6 +122,8 @@ struct Shared {
     state: Mutex<Snapshot>,
     link: Mutex<Option<String>>,
     controls: LiveControls,
+    /// What the firewall says about this program, refreshed by the main thread.
+    firewall: Mutex<crate::firewall::State>,
     /// The updater, once the app has one. The window's "restart to update" button reaches it here.
     updater: Mutex<Option<crate::update::Updater>>,
     /// A random value the page is served with and a change request must repeat.
@@ -186,6 +188,7 @@ impl Wizard {
             state: Mutex::new(Snapshot::default()),
             link: Mutex::new(None),
             controls,
+            firewall: Mutex::new(crate::firewall::State::Unknown),
             updater: Mutex::new(None),
             token: random_token(),
         });
@@ -219,6 +222,13 @@ impl Wizard {
             shared,
             port: bound,
         })
+    }
+
+    /// Tells the page what the firewall says.
+    pub fn set_firewall(&self, state: crate::firewall::State) {
+        if let Ok(mut held) = self.shared.firewall.lock() {
+            *held = state;
+        }
     }
 
     /// Gives the wizard the updater, so the window can show an update and start it.
@@ -289,6 +299,18 @@ fn answer(mut stream: TcpStream, shared: &Arc<Shared>) -> Result<()> {
         ("POST", "/set") => change_setting(shared, query),
         ("GET", "/link") => read_link(shared, query),
         ("POST", "/update") => start_update(shared, query),
+        ("POST", "/firewall-fix") => {
+            let token = query.split('&').find_map(|pair| pair.strip_prefix("t=")).unwrap_or("");
+            if token != shared.token {
+                ("403 Forbidden", "text/plain; charset=utf-8", "bad token".to_string())
+            } else {
+                // Asks Windows for administrator rights; the person sees the standard prompt.
+                match crate::firewall::fix() {
+                    Ok(()) => ("200 OK", "application/json", "{}".to_string()),
+                    Err(e) => ("500 Internal Server Error", "text/plain; charset=utf-8", e.to_string()),
+                }
+            }
+        }
         ("POST", "/reconnect") => {
             let token = query.split('&').find_map(|pair| pair.strip_prefix("t=")).unwrap_or("");
             if token != shared.token {
@@ -382,6 +404,7 @@ fn change_setting(shared: &Arc<Shared>, query: &str) -> (&'static str, &'static 
         "noise" => Setting::NoiseSuppression,
         "echo" => Setting::EchoCancel,
         "level" => Setting::AutoLevel,
+        "guide" => Setting::GuideDone,
         _ => {
             return ("400 Bad Request", "text/plain; charset=utf-8", "unknown setting".to_string())
         }
@@ -399,9 +422,11 @@ fn status_json(shared: &Arc<Shared>) -> String {
     let c = &shared.controls;
     format!(
         "{{\"cable\":{},\"paired\":{},\"live\":{},\"hasCode\":{},\"headline\":{},\"detail\":{},\"phone\":{},\"problem\":{},\
-\"levelIn\":{:.3},\"levelOut\":{:.3},\"paused\":{},\"noise\":{},\"echo\":{},\"autoLevel\":{},\"update\":{}}}",
+\"levelIn\":{:.3},\"levelOut\":{:.3},\"paused\":{},\"noise\":{},\"echo\":{},\"autoLevel\":{},\"update\":{},\"firewall\":{},\"guideDone\":{}}}",
         snapshot.cable,
-        snapshot.paired,
+        // Paired means a phone is connected, not that audio happens to be flowing this instant: a muted
+        // phone sends nothing and is still very much paired.
+        snapshot.paired || c.phone().is_some(),
         snapshot.live,
         has_code,
         json_string(snapshot.headline()),
@@ -428,6 +453,14 @@ fn status_json(shared: &Arc<Shared>) -> String {
                 .as_deref()
                 .unwrap_or("")
         ),
+        json_string(
+            shared
+                .firewall
+                .lock()
+                .map(|f| f.as_str())
+                .unwrap_or("unknown")
+        ),
+        c.get(Setting::GuideDone),
     )
 }
 
