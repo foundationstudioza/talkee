@@ -43,6 +43,14 @@ object Control {
     /** How long any single step of the handshake may take. */
     private const val TIMEOUT_MS = 10_000
 
+    /**
+     * How long to wait for the PC to answer a connection at all.
+     *
+     * Short, because on a home network a PC that is up answers in milliseconds and one that is down
+     * never will. Ten seconds per attempt made every retry cycle slow for no gain.
+     */
+    private const val CONNECT_TIMEOUT_MS = 4_000
+
     /** Bytes of session id. Fresh for every connection, and covered by the proof. */
     private const val SESSION_ID_LEN = 4
 
@@ -172,7 +180,7 @@ object Control {
     fun pair(link: PairLink, deviceId: String, deviceName: String): Paired {
         val socket = Socket()
         try {
-            socket.connect(InetSocketAddress(link.host, link.controlPort), TIMEOUT_MS)
+            socket.connect(InetSocketAddress(link.host, link.controlPort), CONNECT_TIMEOUT_MS)
             socket.soTimeout = TIMEOUT_MS
             val out = OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8)
             val input = BufferedReader(InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8))

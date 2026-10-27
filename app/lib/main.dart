@@ -655,7 +655,17 @@ class _PairingScreenState extends State<PairingScreen> {
                 onDetect: _onDetect,
                 // A camera that will not start is a sentence, not a crash: this is the screen a
                 // person sees when the permission was refused.
-                errorBuilder: (context, error) => const SizedBox.shrink(),
+                errorBuilder: (context, error) => const Align(
+                  alignment: Alignment(0, -0.35),
+                  child: Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 48),
+                    child: Text(
+                      'The camera is off for Talkee.\nAllow it in your phone\'s Settings to scan.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontSize: 14, height: 1.5, color: Colors.white54),
+                    ),
+                  ),
+                ),
               ),
           if (Navigator.of(context).canPop())
             SafeArea(
