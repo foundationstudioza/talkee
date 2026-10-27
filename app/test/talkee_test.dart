@@ -207,6 +207,39 @@ void main() {
     expect(find.text('Live'), findsOneWidget);
   });
 
+  testWidgets('a tap does not flicker back when an older status arrives before the PC answers',
+      (tester) async {
+    // The bug: status arrives four times a second and used to wipe the "waiting for the PC" state, so a
+    // tap showed Muted, snapped back to Live when the next (stale) status landed, then went to Muted
+    // again when the PC finally answered. Tapping during the flicker undid the tap.
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_methods, (call) async => null);
+    mockStatus(paired: true, hasLink: true, state: 'streaming');
+    await tester.pumpWidget(const TalkeeApp());
+    await tester.pump();
+    pushStatus();
+    await tester.pump();
+
+    await tester.tap(find.byIcon(Icons.mic_rounded));
+    await tester.pump();
+    expect(find.text('Muted'), findsOneWidget);
+
+    // A status from before the PC acted: still says not paused.
+    pushStatus();
+    await tester.pump();
+    expect(find.text('Muted'), findsOneWidget, reason: 'a stale status must not undo the tap');
+
+    // The PC answers: the status now agrees, the tap is settled, and the screen stays muted.
+    _current = {..._current, 'paused': true};
+    pushStatus();
+    await tester.pump();
+    expect(find.text('Muted'), findsOneWidget);
+    expect(find.byIcon(Icons.mic_off_rounded), findsOneWidget);
+    // And it stays that way once the give-up timer would have fired.
+    await tester.pump(const Duration(seconds: 3));
+    expect(find.text('Muted'), findsOneWidget);
+  });
+
   testWidgets('a muted PC shows as muted, whichever side muted it', (tester) async {
     mockStatus(paired: true, hasLink: true, state: 'streaming', paused: true);
     await tester.pumpWidget(const TalkeeApp());

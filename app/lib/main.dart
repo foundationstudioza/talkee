@@ -192,12 +192,22 @@ class _TalkeeHomeState extends State<TalkeeHome> with WidgetsBindingObserver {
     if (!mounted || raw is! Map<Object?, Object?>) return;
     final status = TalkeeStatus.fromMap(raw);
     setState(() => _status = status);
-    // The PC has answered, so whatever was waiting on it is settled.
-    for (final timer in _pendingTimers.values) {
-      timer.cancel();
+    // A tap is settled when the PC reports the value that was asked for, and not before. Status
+    // arrives four times a second, so clearing on *any* status wiped the tap before the PC had
+    // answered: the switch showed the new state, snapped back to the old one when the next stale
+    // status landed, then forward again — and a tap during that flicker undid the first. If the PC
+    // never agrees, the timer set in [_ask] gives up and the screen goes back to the truth.
+    final reported = <String, bool>{
+      'paused': status.paused,
+      'noise_suppression': status.noiseSuppression,
+      'echo_cancel': status.echoCancel,
+    };
+    for (final key in _pending.keys.toList()) {
+      if (reported[key] == _pending[key]) {
+        _pending.remove(key);
+        _pendingTimers.remove(key)?.cancel();
+      }
     }
-    _pendingTimers.clear();
-    _pending.clear();
     _scheduleRetry(status);
   }
 
