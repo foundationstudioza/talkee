@@ -51,6 +51,7 @@ object TalkeeEngine {
     private const val PROTOCOL_VERSION = 1
     private const val HEADER_LEN = 24
     private const val FMT_F32 = 1
+    private const val FMT_OPUS = 2
 
     /** Header flag: the payload is `[nonce][ciphertext][tag]` rather than plain PCM. */
     private const val FLAG_ENCRYPTED = 0x10
@@ -647,6 +648,12 @@ object TalkeeEngine {
         sourceLabel = label
 
         val frame = FloatArray(FRAME_SAMPLES)
+        // Compressed audio when the PC asked for it and this phone can. If the codec will not start the
+        // phone falls back to raw samples, which the PC reads just as well: every datagram says which
+        // it is.
+        val wantsOpus = pairing?.config?.format == FMT_OPUS
+        val encoder = if (wantsOpus) OpusEncoder.create(pairing?.config?.bitrate?.takeIf { it > 0 } ?: 64_000) else null
+        if (wantsOpus && encoder == null) Log.w(TAG, "no Opus encoder; sending raw samples")
         var socket: DatagramSocket? = null
         var failures = 0
         var seq = 0
@@ -673,7 +680,11 @@ object TalkeeEngine {
                     while (paused && running.get() && pairing?.connection?.lost != true) {
                         Thread.sleep(60)
                     }
-                    if (running.get() && !paused) runCatching { recorder.startRecording() }
+                    if (running.get() && !paused) {
+                        runCatching { recorder.startRecording() }
+                        // Audio the codec still held belongs to before the mute.
+                        encoder?.reset()
+                    }
                     continue
                 }
                 val read = recorder.read(frame, 0, FRAME_SAMPLES, AudioRecord.READ_BLOCKING)
@@ -694,34 +705,43 @@ object TalkeeEngine {
                 }
                 level = peak
 
-                val packet = buildPacket(
-                    seq = seq,
-                    tsMs = (SystemClock.elapsedRealtime() - startedAt).toInt(),
-                    samples = read,
-                    pcm = frame,
-                )
-                try {
-                    socket.send(DatagramPacket(packet, packet.size))
-                    packetsSent++
-                    samplesSent += read
-                    failures = 0
-                } catch (_: Exception) {
-                    // On a Windows peer, a dead host surfaces as ICMP port
-                    // unreachable rather than silence. A run of these means the
-                    // host is gone, not that this one frame was unlucky.
-                    failures++
-                    if (failures >= sendFailureLimit) {
-                        lastError = "lost the connection to your PC"
-                        break
+                // One 10 ms frame becomes one raw datagram or, through the codec, nothing yet or a
+                // packet of 20 ms. Either way `seq` counts datagrams, which is what the PC's loss
+                // detection needs, and each datagram's header says which of the two it is.
+                val now = (SystemClock.elapsedRealtime() - startedAt).toInt()
+                val datagrams: List<Pair<ByteArray, Int>> = if (encoder != null) {
+                    encoder.encode(frame, read).mapIndexed { n, packet ->
+                        buildOpusPacket(seq + n, now, packet) to packet.samples
                     }
+                } else {
+                    listOf(buildPacket(seq = seq, tsMs = now, samples = read, pcm = frame) to read)
                 }
-                seq++
+                for ((packet, samples) in datagrams) {
+                    try {
+                        socket.send(DatagramPacket(packet, packet.size))
+                        packetsSent++
+                        samplesSent += samples
+                        failures = 0
+                    } catch (_: Exception) {
+                        // On a Windows peer, a dead host surfaces as ICMP port
+                        // unreachable rather than silence. A run of these means the
+                        // host is gone, not that this one frame was unlucky.
+                        failures++
+                        if (failures >= sendFailureLimit) {
+                            lastError = "lost the connection to your PC"
+                            break
+                        }
+                    }
+                    seq++
+                }
+                if (failures >= sendFailureLimit) break
             }
         } catch (e: Exception) {
             lastError = "capture failed: ${e.message}"
         } finally {
             runCatching { recorder.stop() }
             recorder.release()
+            encoder?.close()
             runCatching { socket?.close() }
             level = 0f
             starting.set(false)
@@ -765,6 +785,32 @@ object TalkeeEngine {
      * would present as *zero* packets received, because the Rust parser rejects
      * a header whose declared payload length disagrees with its fields.
      */
+    /**
+     * Serialises one datagram carrying an Opus packet.
+     *
+     * Always sealed: Opus is only ever asked for in a pairing, and a packet that is not authentic is
+     * refused by the PC before the decoder sees it. The payload length is the packet plus the nonce
+     * and tag, and the header is the associated data, exactly as for raw samples.
+     */
+    private fun buildOpusPacket(seq: Int, tsMs: Int, packet: OpusEncoder.Packet): ByteArray {
+        val session = requireNotNull(pairing) { "Opus is only sent in a pairing" }
+        val payloadLen = packet.bytes.size + Crypto.AEAD_OVERHEAD
+        val buffer = ByteBuffer.allocate(HEADER_LEN + payloadLen).order(ByteOrder.LITTLE_ENDIAN)
+        buffer.putShort(MAGIC.toShort())
+        buffer.put(PROTOCOL_VERSION.toByte())
+        buffer.put(FLAG_ENCRYPTED.toByte())
+        buffer.putInt(seq)
+        buffer.putInt(tsMs)
+        buffer.putInt(SAMPLE_RATE)
+        buffer.putShort(packet.samples.toShort())
+        buffer.put(1.toByte()) // channels: mono
+        buffer.put(FMT_OPUS.toByte())
+        buffer.putInt(payloadLen)
+        val header = buffer.array().copyOfRange(0, HEADER_LEN)
+        buffer.put(Crypto.seal(session.sessionKey, Crypto.PHONE_TO_DESKTOP, seq, packet.bytes, header))
+        return buffer.array()
+    }
+
     private fun buildPacket(seq: Int, tsMs: Int, samples: Int, pcm: FloatArray): ByteArray {
         val plainBytes = samples * BYTES_PER_SAMPLE
         val session = pairing

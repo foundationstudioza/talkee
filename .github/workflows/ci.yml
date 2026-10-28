@@ -32,6 +32,10 @@ jobs:
       - name: Flutter tests
         working-directory: app
         run: flutter test
+      # The Gradle wrapper is not kept in the repository; Flutter writes it.
+      - name: Prepare Gradle
+        working-directory: app
+        run: flutter build apk --config-only
       - name: Kotlin tests
         working-directory: app/android
         run: ./gradlew :app:testDebugUnitTest

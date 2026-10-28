@@ -66,6 +66,7 @@ object Control {
         val channels: Int,
         val format: Int,
         val frameMs: Int,
+        val bitrate: Int,
         val source: String,
     )
 
@@ -252,8 +253,9 @@ object Control {
                     config = Config(
                         sampleRate = answer.optInt("sample_rate", 48_000),
                         channels = answer.optInt("channels", 1),
-                        format = answer.optInt("format", 1),
+                        format = formatOf(answer.opt("format")),
                         frameMs = answer.optInt("frame_ms", 10),
+                        bitrate = answer.optInt("bitrate", 0),
                         source = answer.optString("source", "unprocessed"),
                     ),
                     connection = Connection(socket, input, out),
@@ -275,7 +277,25 @@ object Control {
     }
 
     /** What this phone can do, as a real JSON array of strings. */
-    private fun capsArray(): JSONArray = JSONArray().put("aes-gcm").put("pcm-f32")
+    private fun capsArray(): JSONArray {
+        val caps = JSONArray().put("aes-gcm").put("pcm-f32")
+        // Offered only when the phone really has the encoder, because the PC will then ask for it.
+        if (OpusEncoder.available()) caps.put("opus")
+        return caps
+    }
+
+    /**
+     * The wire number for the encoding the host named. The host writes it as a word (`"Opus"`), which
+     * `optInt` would read as nothing and silently fall back to raw samples, so both spellings are
+     * understood.
+     */
+    internal fun formatOf(value: Any?): Int = when (value) {
+        is Number -> value.toInt()
+        "I16" -> 0
+        "F32" -> 1
+        "Opus" -> 2
+        else -> 1
+    }
 
     /** Writes one newline-delimited line, and flushes it. */
     private fun send(out: Writer, message: JSONObject) {

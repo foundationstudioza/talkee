@@ -187,7 +187,7 @@ ever offered for auto-install.
 | # | Milestone | Goal |
 |---|---|---|
 | **M0** | **Spike — you are here** | Measure honest latency through both audio paths |
-| **M1** | **Audio engine — in progress** | Jitter buffer and drift correction are **done** (`DepthController`; measurements in `docs/LATENCY.md`). Opus + FEC is next |
+| **M1** | **Audio engine — done** | Jitter buffer that follows the network (`JitterEstimator`), drift correction (`DepthController`), Opus from the phone's own encoder with packet-loss concealment on the PC. Measurements in `docs/LATENCY.md` |
 | M2 | Security | QR pairing, mDNS discovery, AES-256-GCM |
 | M3 | GUI | Flutter desktop + mobile, one-click cable setup |
 | M4 | Robustness | Reconnect, roaming, USB transport, stats panel |
@@ -231,9 +231,12 @@ Things that are known, deliberately unfinished, and not bugs:
   resampler's ratio, and `slip` is now a failure signal rather than a routine one. What
   is left of the old behaviour is the capacity guard, which stops a burst from growing
   latency without bound, and `trim`, which is the loop choosing to shed.
-* `magnum-opus` **0.3.2** is a minimal binding: it has `set_bitrate`,
-  `set_inband_fec` and `set_packet_loss_perc`, but **no `set_complexity` and no
-  `set_dtx`**, and `Application` is construction-only. M1 should confirm whether
-  `Decoder` supports decoding an empty slice for packet-loss concealment before
-  committing to it.
+* Opus is decoded with libopus (the `opus` crate, built from bundled source, so building needs CMake).
+  The phone encodes with Android's own Opus encoder (Android 10 and later) and offers `opus` in its
+  capabilities; the PC then asks for it. An older phone sends raw samples, and the receiver follows the
+  format in each datagram's header, so either works. In-band FEC is not used yet: the Android encoder
+  does not expose it, and the decoder's concealment covers short gaps.
+* The depth the receiver aims for is not a setting. `JitterEstimator` measures how late packets arrive
+  against where they belong in the stream, and the target follows it between 50 and 200 ms: up at
+  once, down by 5 ms a second. The health line's `aim` column shows it.
 

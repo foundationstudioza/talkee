@@ -162,6 +162,9 @@ impl SharedQueue {
     /// Never blocks. Called from the audio callback.
     pub fn fill(&self, out: &mut [f32]) -> FillOutcome {
         let requested = out.len();
+        self.stats
+            .callback_frames_max
+            .fetch_max(requested as u64, Ordering::Relaxed);
         let mut guard = match self.inner.try_lock() {
             Ok(g) => g,
             Err(TryLockError::Poisoned(p)) => p.into_inner(),

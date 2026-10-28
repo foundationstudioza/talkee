@@ -120,11 +120,12 @@ pub fn target_frames(buffer_ms: u32, device_rate: u32) -> usize {
 
 /// Queue capacity for a given target depth.
 ///
-/// Four times the depth, floored at 1024 frames, mirroring `talkee host`: this is the
-/// guard that stops one burst from growing latency without bound, not a drift
-/// strategy.
+/// Ten times the starting depth (600 ms at the default), floored at 1024 frames. The depth the
+/// receiver aims for moves with the network, up to 200 ms plus the room it sheds a burst from, and
+/// the queue has to be able to hold that. This is still only the guard that stops one burst from
+/// growing latency without bound, not a drift strategy.
 pub fn queue_capacity(target: usize) -> usize {
-    (target * 4).max(1024)
+    (target * 10).max(1024)
 }
 
 
@@ -926,6 +927,7 @@ mod tests {
         for target in [1usize, 2_880, 3_840] {
             let capacity = queue_capacity(target);
             assert!(capacity >= target * 4);
+            assert!(capacity >= target * 10);
             assert!(capacity >= 1_024, "a tiny target must not shrink the queue");
         }
     }

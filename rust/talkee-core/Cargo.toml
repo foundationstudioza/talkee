@@ -10,5 +10,9 @@ description = "Talkee audio pipeline: jitter buffer, drift control, UDP transpor
 talkee-proto = { workspace = true }
 anyhow = { workspace = true }
 
+# Voice codec: libopus, built from the bundled source. Opus is what makes a phone on a weak network
+# usable: about 40 times less data than raw samples, and a decoder that can conceal a lost packet.
+opus = "0.4"
+
 # WebRTC audio processing in pure Rust: echo cancellation without a C++ toolchain.
 sonora = "0.2"

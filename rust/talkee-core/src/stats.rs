@@ -34,6 +34,11 @@ pub struct Stats {
     pub callback_busy: AtomicU64,
     /// Samples delivered as silence because the queue was empty at stream start.
     pub prefill_silence: AtomicU64,
+    /// The most frames the output device has asked for in one callback.
+    ///
+    /// The queue must hold at least this much, or a callback finds it short however evenly the audio
+    /// arrives: a device that pulls 40 ms at a time underruns a 40 ms queue every time.
+    pub callback_frames_max: AtomicU64,
     /// Peak absolute sample of the most recent frame accepted from the sender, as
     /// `f32` bits.
     ///
@@ -74,6 +79,8 @@ pub struct StatsSnapshot {
     pub callback_busy: u64,
     /// See [`Stats::prefill_silence`].
     pub prefill_silence: u64,
+    /// See [`Stats::callback_frames_max`].
+    pub callback_frames_max: u64,
 }
 
 impl Stats {
@@ -100,6 +107,7 @@ impl Stats {
             underruns: self.underruns.load(Ordering::Relaxed),
             callback_busy: self.callback_busy.load(Ordering::Relaxed),
             prefill_silence: self.prefill_silence.load(Ordering::Relaxed),
+            callback_frames_max: self.callback_frames_max.load(Ordering::Relaxed),
         }
     }
 

@@ -19,7 +19,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use talkee_proto::crypto::proof::SessionId;
 use talkee_proto::crypto::session::{OpenError, Session};
-use talkee_proto::AudioHeader;
+use talkee_proto::{AudioHeader, SampleFormat};
 
 /// Largest plausible sequence gap before we assume the sender restarted.
 ///
@@ -276,6 +276,17 @@ pub struct Receiver {
     mono: Vec<f32>,
     resampled: Vec<f32>,
     last_log: Instant,
+    /// Decoder for a phone that sends Opus. Made on the first Opus packet, because most runs begin
+    /// with a phone that sends raw samples and never need one.
+    opus: Option<crate::codec::OpusStream>,
+    /// How unevenly packets arrive, which sets how deep the buffer needs to be.
+    jitter: crate::jitter::JitterEstimator,
+    /// The origin for the arrival times the estimator is given.
+    clock: Instant,
+    /// The depth currently being aimed for, in ms. Moves with the network; see [`crate::jitter`].
+    target_ms: f64,
+    /// How much audio the last packet carried, in ms.
+    packet_ms: f64,
 }
 
 impl Receiver {
@@ -324,6 +335,11 @@ impl Receiver {
             mono: Vec::with_capacity(4096),
             resampled: Vec::with_capacity(8192),
             last_log: Instant::now(),
+            opus: None,
+            jitter: crate::jitter::JitterEstimator::new(),
+            clock: Instant::now(),
+            target_ms: config.target_frames as f64 * 1000.0 / config.device_rate.max(1) as f64,
+            packet_ms: 10.0,
         })
     }
 
@@ -411,6 +427,40 @@ impl Receiver {
     /// audio port would have a chicken-and-egg problem on every restart.
     pub fn attach_session(&mut self, session: SharedSession) {
         self.session = Some(session);
+    }
+
+    /// Decodes an Opus packet onto the end of `self.mono`, after a guess at what was lost before it.
+    fn decode_opus(&mut self, header: &AudioHeader, packet: &[u8], lost: usize) -> usize {
+        // Only 48 kHz mono: it is the one thing the phone sends, and the echo canceller and the
+        // resampler both assume it. Anything else is refused rather than played at the wrong speed.
+        if header.sample_rate != 48_000 || header.channels != 1 {
+            self.reject("Opus audio that is not 48 kHz mono");
+            return 0;
+        }
+        if self.opus.is_none() {
+            match crate::codec::OpusStream::new() {
+                Ok(stream) => self.opus = Some(stream),
+                Err(error) => {
+                    self.reject(format!("{error:#}"));
+                    return 0;
+                }
+            }
+        }
+        let Some(stream) = self.opus.as_mut() else {
+            return 0;
+        };
+        let frames = stream.decode(packet, lost, &mut self.mono);
+        if frames == 0 {
+            self.reject("an Opus packet that does not decode");
+        }
+        frames
+    }
+
+    /// Forgets the Opus decoder's memory of the previous packets.
+    fn reset_opus(&mut self) {
+        if let Some(stream) = self.opus.as_mut() {
+            stream.reset();
+        }
     }
 
     /// Counts a rejected datagram, printing the first few reasons.
@@ -523,11 +573,15 @@ impl Receiver {
                     self.next_seq = None;
                     self.queue.clear();
                     self.resampler.reset();
+                    self.reset_opus();
+                    self.jitter.reset();
                     self.window = ArrivalWindow::new();
                 }
             }
         }
 
+        // Packets known to be missing just before this one, so an Opus decoder can conceal them.
+        let mut missing_before = 0usize;
         match classify_seq(self.next_seq, header.seq) {
             SeqOutcome::First => {
                 println!("talkee: first datagram received, stream is live");
@@ -537,6 +591,7 @@ impl Receiver {
                 self.next_seq = Some(header.seq.wrapping_add(1));
             }
             SeqOutcome::Skipped(missing) => {
+                missing_before = missing as usize;
                 self.stats.frames_lost.fetch_add(missing as u64, Ordering::Relaxed);
                 self.next_seq = Some(header.seq.wrapping_add(1));
             }
@@ -549,6 +604,8 @@ impl Receiver {
                 self.next_seq = Some(header.seq.wrapping_add(1));
                 self.queue.clear();
                 self.resampler.reset();
+                self.reset_opus();
+                self.jitter.reset();
                 // A window straddling a restart would report a rate for two
                 // different streams at once, so it goes with the queue.
                 self.window = ArrivalWindow::new();
@@ -556,6 +613,12 @@ impl Receiver {
         }
 
         self.stats.datagrams.fetch_add(1, Ordering::Relaxed);
+        self.packet_ms = header.frame_duration_ms() as f64;
+        self.jitter.observe(
+            self.clock.elapsed(),
+            header.seq,
+            std::time::Duration::from_micros(header.samples as u64 * 1_000_000 / header.sample_rate.max(1) as u64),
+        );
 
         // Muted from the PC, the tray or the phone. The datagram has been authenticated and counted —
         // the phone is still there — but nothing it carries reaches the cable.
@@ -565,6 +628,9 @@ impl Receiver {
             .is_some_and(|c| c.get(crate::live::Setting::Paused))
         {
             self.stats.set_input_level(0.0);
+            // What the decoder remembers is from before the mute, so it must not be used to guess at
+            // the packets after it.
+            self.reset_opus();
             return;
         }
 
@@ -590,7 +656,11 @@ impl Receiver {
         }
 
         self.mono.clear();
-        let frames = header.decode_pcm_mono(payload, &mut self.mono);
+        let frames = if header.format == SampleFormat::Opus {
+            self.decode_opus(&header, payload, missing_before)
+        } else {
+            header.decode_pcm_mono(payload, &mut self.mono)
+        };
         if frames == 0 {
             return;
         }
@@ -657,6 +727,23 @@ impl Receiver {
         }
         self.last_control = Instant::now();
 
+        // The depth to hold follows the network: deeper the moment packets get bursty, shallower only
+        // after it has been calm for a while. Only when a target was configured at all.
+        if let Some(needed) = self.jitter.needed_ms() {
+            let before = self.target_ms;
+            let rate = self.config.device_rate.max(1) as f64;
+            let callback_ms = self.stats.callback_frames_max.load(Ordering::Relaxed) as f64 * 1000.0 / rate;
+            let floor = crate::jitter::floor_ms(callback_ms, self.packet_ms);
+            self.target_ms = crate::jitter::next_target_ms(self.target_ms, needed, floor, elapsed);
+            if self.target_ms >= before + 25.0 {
+                println!(
+                    "talkee: packets are arriving up to {needed:.0} ms late; now holding {:.0} ms",
+                    self.target_ms
+                );
+            }
+            let frames = (self.target_ms * self.config.device_rate as f64 / 1000.0) as usize;
+            controller.set_target(frames);
+        }
         let correction = controller.update(self.queue.len(), elapsed);
         if correction.drop_oldest > 0 {
             self.queue.drop_oldest(correction.drop_oldest);
@@ -720,7 +807,7 @@ impl Receiver {
         };
 
         println!(
-            "recv {:>7} dgram | {dgram_rate} dgram/s | {frame_rate} frames/s | {frame_size} frames/dgram | loss {:>6.2}% ({}) | late {:>5} | slip {:>6} | trim {:>6} | under {:>5} | busy {:>4} | queue {:>6.1} ms | gain {gain}x | ctrl {ctrl} ppm | drift {ppm} ppm | echo {echo}",
+            "recv {:>7} dgram | {dgram_rate} dgram/s | {frame_rate} frames/s | {frame_size} frames/dgram | loss {:>6.2}% ({}) | late {:>5} | slip {:>6} | trim {:>6} | under {:>5} | busy {:>4} | queue {:>6.1} ms | aim {:>4.0} ms | cb {:>5} f | gain {gain}x | ctrl {ctrl} ppm | drift {ppm} ppm | echo {echo}",
             s.datagrams,
             s.loss_ratio() * 100.0,
             s.frames_lost,
@@ -730,6 +817,8 @@ impl Receiver {
             s.underruns,
             s.callback_busy,
             self.queue.len() as f32 * 1000.0 / device_rate,
+            self.target_ms,
+            s.callback_frames_max,
         );
     }
 }
@@ -767,6 +856,75 @@ mod tests {
             buf.extend_from_slice(&value.to_le_bytes());
         }
         buf
+    }
+
+    /// A datagram carrying one Opus packet of `samples` samples.
+    fn opus_datagram(seq: u32, samples: u16, packet: &[u8]) -> Vec<u8> {
+        let header = AudioHeader::new_variable_len(
+            seq,
+            0,
+            48_000,
+            samples,
+            1,
+            SampleFormat::Opus,
+            packet.len(),
+            0,
+        )
+        .expect("a valid Opus header");
+        let mut buf = header.to_bytes().to_vec();
+        buf.extend_from_slice(packet);
+        buf
+    }
+
+    /// Encodes `count` 20 ms packets of a steady tone.
+    fn opus_packets(count: usize) -> Vec<Vec<u8>> {
+        use opus::{Application, Channels, Encoder};
+        let mut encoder = Encoder::new(48_000, Channels::Mono, Application::Voip).unwrap();
+        (0..count)
+            .map(|n| {
+                let pcm: Vec<f32> = (0..960)
+                    .map(|i| {
+                        let t = (n * 960 + i) as f32 / 48_000.0;
+                        0.3 * (2.0 * std::f32::consts::PI * 300.0 * t).sin()
+                    })
+                    .collect();
+                encoder.encode_vec_float(&pcm, 1_500).unwrap()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn opus_packets_are_decoded_into_the_queue() {
+        let (mut rx, stats, queue) = receiver(48_000);
+        for (seq, packet) in opus_packets(10).iter().enumerate() {
+            rx.ingest(&opus_datagram(seq as u32, 960, packet));
+        }
+        let snapshot = stats.snapshot();
+        assert_eq!(snapshot.parse_errors, 0);
+        assert_eq!(snapshot.datagrams, 10);
+        assert_eq!(queue.len(), 10 * 960);
+    }
+
+    #[test]
+    fn a_lost_opus_packet_is_concealed_so_the_stream_keeps_its_length() {
+        let (mut rx, stats, queue) = receiver(48_000);
+        let packets = opus_packets(10);
+        for (seq, packet) in packets.iter().enumerate() {
+            if seq == 5 {
+                continue;
+            }
+            rx.ingest(&opus_datagram(seq as u32, 960, packet));
+        }
+        assert_eq!(stats.snapshot().frames_lost, 1);
+        assert_eq!(queue.len(), 10 * 960, "nine packets heard plus a guess at the tenth");
+    }
+
+    #[test]
+    fn something_that_is_not_opus_is_refused_and_counted() {
+        let (mut rx, stats, queue) = receiver(48_000);
+        rx.ingest(&opus_datagram(0, 960, &[0xFF]));
+        assert_eq!(stats.snapshot().parse_errors, 1);
+        assert_eq!(queue.len(), 0);
     }
 
     fn receiver(device_rate: u32) -> (Receiver, Arc<Stats>, Arc<SharedQueue>) {

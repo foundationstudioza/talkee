@@ -53,6 +53,10 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(20);
 /// the dialog, and a bound that stops a connecting script from spawning threads without limit.
 const MAX_CONTROL_CONNECTIONS: usize = 8;
 
+/// Bits per second asked of a phone's Opus encoder. Voice is transparent well below this; the
+/// headroom is for a loud room, where the encoder has more to say.
+const OPUS_BITRATE: u32 = 64_000;
+
 /// Replaces anything that is not a printable ASCII character.
 ///
 /// Peer-supplied strings are printed to a terminal, and a name containing an ANSI escape sequence
@@ -212,12 +216,16 @@ fn handle_pairing(
         "talkee: {peer} paired (session {}); frames sealed with this key are accepted",
         session_id.to_hex()
     );
+    // Compressed when the phone says it can, because that is about forty times less on the air; raw
+    // samples otherwise. The receiver follows each datagram's own header, so a phone that is unable
+    // to keep its promise and sends raw samples anyway is still heard.
+    let opus = caps.iter().any(|c| c == "opus");
     ControlMsg::Config {
         sample_rate: 48_000,
         channels: 1,
-        format: SampleFormat::F32,
-        frame_ms: 10,
-        bitrate: 0,
+        format: if opus { SampleFormat::Opus } else { SampleFormat::F32 },
+        frame_ms: if opus { 20 } else { 10 },
+        bitrate: if opus { OPUS_BITRATE } else { 0 },
         fec: false,
         source: "unprocessed".to_string(),
     }

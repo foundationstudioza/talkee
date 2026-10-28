@@ -25,9 +25,11 @@
 
 #![forbid(unsafe_code)]
 
+pub mod codec;
 pub mod control;
 pub mod echo;
 pub mod controller;
+pub mod jitter;
 pub mod level;
 pub mod live;
 pub mod local;
