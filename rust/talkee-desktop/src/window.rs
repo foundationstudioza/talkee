@@ -85,6 +85,8 @@ struct Status {
     firewall: String,
     /// The setup guide has been dismissed.
     guide_done: bool,
+    /// About how long a word takes from the phone to the application, in ms; 0 when not known.
+    delay_ms: u32,
 }
 
 impl Status {
@@ -111,6 +113,7 @@ impl Status {
             cable: flag("cable"),
             firewall: text("firewall"),
             guide_done: flag("guideDone"),
+            delay_ms: v["delayMs"].as_u64().unwrap_or(0) as u32,
         })
     }
 }
@@ -268,6 +271,14 @@ impl eframe::App for App {
                     meter(ui, "From your phone", if status.paused { 0.0 } else { status.level_in });
                     ui.add_space(10.0);
                     meter(ui, "Into the virtual microphone", if status.paused { 0.0 } else { status.level_out });
+                    if status.delay_ms > 0 && status.paired {
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new(format!("About {} ms from your phone to your apps", status.delay_ms))
+                                .color(FAINT)
+                                .size(12.0),
+                        );
+                    }
                     ui.add_space(20.0);
 
                     // (setting, title, subtitle, is it on). The microphone row reads "on" when audio

@@ -20,6 +20,10 @@
          service may only be started while the app is visible. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <!-- Holding the processor and the Wi-Fi radio awake while streaming with the screen off, and
+         asking (the system shows its own dialog) to be left out of battery optimisation. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- Installing a downloaded update. Outside the Play Store this is the only way an app can
          update itself, and the system still asks the user to confirm every install. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />

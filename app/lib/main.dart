@@ -32,6 +32,7 @@ class TalkeeStatus {
     this.noiseSuppression = true,
     this.echoCancel = true,
     this.update,
+    this.backgroundAllowed = true,
     this.error,
   });
 
@@ -48,6 +49,7 @@ class TalkeeStatus {
     noiseSuppression: (map['noiseSuppression'] as bool?) ?? true,
     echoCancel: (map['echoCancel'] as bool?) ?? true,
     update: map['update'] as String?,
+    backgroundAllowed: (map['backgroundAllowed'] as bool?) ?? true,
     error: map['error'] as String?,
   );
 
@@ -72,6 +74,10 @@ class TalkeeStatus {
   /// This is what decides which screen the app is. A paired phone whose PC is asleep still has a
   /// link, and showing it a scanner again would suggest the pairing was lost.
   final bool hasLink;
+
+  /// False when the system may stop the app once the screen is off, which on many phones it will
+  /// within minutes. The screen offers the one tap that lets it keep running.
+  final bool backgroundAllowed;
 
   /// The PC's switches, as it last reported them. The PC decides; this only shows.
   final bool paused;
@@ -331,6 +337,33 @@ class _TalkeeHomeState extends State<TalkeeHome> with WidgetsBindingObserver {
                           style: const TextStyle(
                             fontSize: 13,
                             color: _Palette.streaming,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ],
+                  if (connected && !_status.backgroundAllowed) ...[
+                    const SizedBox(height: 14),
+                    GestureDetector(
+                      onTap: () => _invoke('allowBackground'),
+                      behavior: HitTestBehavior.opaque,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 10,
+                        ),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(20),
+                          color: _Palette.searching.withValues(alpha: 0.12),
+                          border: Border.all(
+                            color: _Palette.searching.withValues(alpha: 0.5),
+                          ),
+                        ),
+                        child: const Text(
+                          'Keep working with the screen off · Allow',
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: _Palette.searching,
                           ),
                         ),
                       ),

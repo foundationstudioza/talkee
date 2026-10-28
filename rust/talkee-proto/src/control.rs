@@ -109,6 +109,11 @@ pub enum ControlMsg {
     Ping {
         /// Sender's timestamp in ms.
         ts: u32,
+        /// The sender's last measured round trip to the peer, in ms. Only the side that sent a ping
+        /// can time its echo, so this is how the other side learns the figure. Left out until there
+        /// has been an echo to time, and by senders that predate it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rtt_ms: Option<u32>,
     },
     /// Periodic telemetry from the phone, for the desktop stats panel.
     Stats {

@@ -79,3 +79,35 @@ pub fn init(console: bool) -> String {
 pub fn init(_console: bool) -> String {
     "the terminal".to_string()
 }
+
+/// Starts a fresh log when the current one has grown past [`MAX_BYTES`], keeping the last as
+/// `talkee.old.log`. [`init`] only checks at startup, and a tray app that is left running for weeks
+/// never starts again.
+#[cfg(windows)]
+pub fn rotate_if_large() {
+    use std::fs::{self, OpenOptions};
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::Console::{SetStdHandle, STD_ERROR_HANDLE, STD_OUTPUT_HANDLE};
+
+    let path = log_path();
+    if fs::metadata(&path).map(|m| m.len() <= MAX_BYTES).unwrap_or(true) {
+        return;
+    }
+    // Windows lets a file that is open for appending be renamed, so the old handle can stay where it
+    // is until the new one is in place; the few bytes it writes meanwhile land in the old file.
+    let _ = fs::rename(&path, path.with_file_name("talkee.old.log"));
+    let Ok(file) = OpenOptions::new().create(true).append(true).open(&path) else {
+        return;
+    };
+    let handle = file.as_raw_handle();
+    // SAFETY: as in `init`: a valid handle that is deliberately never closed.
+    unsafe {
+        SetStdHandle(STD_OUTPUT_HANDLE, handle as _);
+        SetStdHandle(STD_ERROR_HANDLE, handle as _);
+    }
+    std::mem::forget(file);
+}
+
+/// Nothing to rotate off Windows.
+#[cfg(not(windows))]
+pub fn rotate_if_large() {}

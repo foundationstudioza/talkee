@@ -20,6 +20,7 @@ void mockStatus({
   String? error,
   String state = 'discovering',
   bool paused = false,
+  bool backgroundAllowed = true,
 }) {
   // The real plugin pushes every 250 ms, and the gate and the microphone screen share one broadcast
   // stream: the second listener only hears what is sent after it subscribes. So a test that needs
@@ -38,6 +39,7 @@ void mockStatus({
           'packetsSent': 0,
           'paired': paired,
           'hasLink': hasLink,
+          'backgroundAllowed': backgroundAllowed,
           'error': error,
         };
         sink.success(_current);
@@ -267,6 +269,36 @@ void main() {
     await tester.pump();
 
     expect(calls.where((c) => c.method == 'set'), isEmpty);
+  });
+
+  testWidgets('a phone that may be stopped in the background offers the one tap that fixes it',
+      (tester) async {
+    final calls = <MethodCall>[];
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_methods, (call) async {
+      calls.add(call);
+      return null;
+    });
+    mockStatus(paired: true, hasLink: true, state: 'streaming', backgroundAllowed: false);
+    await tester.pumpWidget(const TalkeeApp());
+    await tester.pump();
+    pushStatus();
+    await tester.pump();
+
+    await tester.tap(find.textContaining('screen off'));
+    await tester.pump();
+
+    expect(calls.where((c) => c.method == 'allowBackground'), hasLength(1));
+  });
+
+  testWidgets('a phone that is already allowed is not nagged', (tester) async {
+    mockStatus(paired: true, hasLink: true, state: 'streaming');
+    await tester.pumpWidget(const TalkeeApp());
+    await tester.pump();
+    pushStatus();
+    await tester.pump();
+
+    expect(find.textContaining('screen off'), findsNothing);
   });
 
   test('channel names match the Android plugin', () {

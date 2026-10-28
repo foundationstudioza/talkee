@@ -5,7 +5,7 @@
 //! goes through [`LiveControls::set`], every reader looks at the same atomics, and a version number
 //! tells the control connection when there is something new to tell the phone.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// One switch.
@@ -35,6 +35,8 @@ struct Inner {
     version: AtomicU64,
     /// Bumped to ask the control connection to be dropped, so a phone that is stuck reconnects.
     reconnects: AtomicU64,
+    /// The phone's measured round trip to this PC in ms, or 0 when it has not reported one.
+    rtt_ms: AtomicU32,
     phone: Mutex<Option<String>>,
 }
 
@@ -53,6 +55,7 @@ impl LiveControls {
             guide_done: AtomicBool::new(false),
             version: AtomicU64::new(1),
             reconnects: AtomicU64::new(0),
+            rtt_ms: AtomicU32::new(0),
             phone: Mutex::new(None),
         }))
     }
@@ -106,8 +109,25 @@ impl LiveControls {
         self.0.reconnects.load(Ordering::Acquire)
     }
 
+    /// Records the round trip the phone measured to this PC.
+    pub fn set_rtt_ms(&self, rtt: u32) {
+        self.0.rtt_ms.store(rtt, Ordering::Relaxed);
+    }
+
+    /// The phone's last measured round trip in ms, when it has reported one.
+    pub fn rtt_ms(&self) -> Option<u32> {
+        match self.0.rtt_ms.load(Ordering::Relaxed) {
+            0 => None,
+            rtt => Some(rtt),
+        }
+    }
+
     /// Records which phone is connected, or none.
     pub fn set_phone(&self, name: Option<String>) {
+        if name.is_none() {
+            // A round trip measured to a phone that has gone says nothing about the next one.
+            self.0.rtt_ms.store(0, Ordering::Relaxed);
+        }
         if let Ok(mut held) = self.0.phone.lock() {
             *held = name;
         }
@@ -149,5 +169,15 @@ mod tests {
         let before = a.reconnect_requests();
         b.request_reconnect();
         assert_eq!(a.reconnect_requests(), before + 1);
+    }
+
+    #[test]
+    fn a_round_trip_is_remembered_until_the_phone_goes() {
+        let controls = LiveControls::new(true, true, true);
+        assert_eq!(controls.rtt_ms(), None);
+        controls.set_rtt_ms(18);
+        assert_eq!(controls.rtt_ms(), Some(18));
+        controls.set_phone(None);
+        assert_eq!(controls.rtt_ms(), None, "a gone phone's round trip is stale");
     }
 }

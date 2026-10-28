@@ -367,6 +367,7 @@ struct Frame {
     lost: u64,
     underruns: u64,
     queue_frames: usize,
+    queue_ms: u32,
     error: Option<String>,
 }
 
@@ -382,6 +383,8 @@ struct Session {
     _advertisement: Option<discovery::Advertisement>,
     /// Held so the speaker capture that feeds the echo canceller stops with the session.
     _loopback: Option<vmic::Loopback>,
+    /// The device's rate, to turn the queue's frames into time.
+    device_rate: u32,
     last_datagram_at: Option<Instant>,
     last_datagrams: u64,
     quiet_for: Duration,
@@ -431,6 +434,7 @@ impl Session {
             lost: snapshot.frames_lost,
             underruns: snapshot.underruns,
             queue_frames: self.queue.len(),
+            queue_ms: (self.queue.len() as u64 * 1000 / self.device_rate.max(1) as u64) as u32,
             error: self.receiver.take_error(),
         }
     }
@@ -785,6 +789,7 @@ impl Engine {
             receiver: receiver_thread,
             _advertisement: advertisement,
             _loopback: loopback,
+            device_rate: format.sample_rate,
             last_datagram_at: None,
             last_datagrams: 0,
             quiet_for: Duration::ZERO,
@@ -833,6 +838,7 @@ impl Engine {
                 reading.lost = frame.lost;
                 reading.underruns = frame.underruns;
                 reading.queue_frames = frame.queue_frames;
+                reading.queue_ms = frame.queue_ms;
                 if frame.meter == OutMeter::Unpublished && !self.output_notice_sent {
                     // Exactly once, and only after the grace period inside OutTracker has
                     // passed, so this is never a false alarm about a device that simply has

@@ -105,6 +105,12 @@ object Control {
         @Volatile var lost: Boolean = false
             private set
 
+        /** The last measured round trip to the PC in ms, or 0 before the first echo. */
+        @Volatile var lastRttMs: Int = 0
+            private set
+
+        private fun nowMs(): Int = (System.nanoTime() / 1_000_000L).toInt() and 0x7fffffff
+
         /**
          * Reads what the host says for as long as the connection lasts.
          *
@@ -124,7 +130,12 @@ object Control {
                 try {
                     while (!lost && !socket.isClosed) {
                         Thread.sleep(PING_EVERY_MS)
-                        send(JSONObject().put("type", "PING").put("ts", (System.nanoTime() / 1_000_000L).toInt() and 0x7fffffff))
+                        val ping = JSONObject().put("type", "PING").put("ts", nowMs())
+                        // The PC cannot time its own echo, so it is told the last figure measured here.
+                        // It shows the person what the delay is.
+                        val rtt = lastRttMs
+                        if (rtt > 0) ping.put("rtt_ms", rtt)
+                        send(ping)
                     }
                 } catch (_: Exception) {
                     // The watcher below notices the same failure and flips [lost].
@@ -137,6 +148,11 @@ object Control {
                     while (true) {
                         val line = input.readLine() ?: break
                         val message = try { JSONObject(line) } catch (_: Exception) { continue }
+                        if (message.optString("type") == "PING") {
+                            // The PC's echo of a ping sent from here: the time since is the round trip.
+                            val rtt = (nowMs() - message.optInt("ts")) and 0x7fffffff
+                            if (rtt in 1..10_000) lastRttMs = rtt
+                        }
                         if (message.optString("type") == "STATE") {
                             onState(
                                 message.optBoolean("paused", false),

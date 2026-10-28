@@ -561,6 +561,11 @@ where
     let config: StreamConfig = supported.into();
 
     let mut mono: Vec<f32> = Vec::with_capacity(4096);
+    // WASAPI reports a discontinuity as an "underrun" whenever the speakers go quiet and start
+    // again, which on a busy machine is every few seconds. The echo canceller copes (see
+    // `talkee_core::echo`), so one line a minute saying how many is enough.
+    let mut glitches = 0u32;
+    let mut last_report: Option<std::time::Instant> = None;
     let stream = device
         .build_input_stream::<f32, _, _>(
             config,
@@ -571,7 +576,13 @@ where
                 }
                 on_samples(&mono, sample_rate);
             },
-            |e| eprintln!("talkee: loopback capture error: {e}"),
+            move |e| {
+                glitches += 1;
+                if last_report.map_or(true, |at| at.elapsed() >= std::time::Duration::from_secs(60)) {
+                    eprintln!("talkee: loopback capture: {e} ({glitches} so far)");
+                    last_report = Some(std::time::Instant::now());
+                }
+            },
             None,
         )
         .with_context(|| format!("capturing what {name} plays"))?;

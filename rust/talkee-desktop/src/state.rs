@@ -403,8 +403,26 @@ pub struct Reading {
     pub underruns: u64,
     /// Frames buffered for the device.
     pub queue_frames: usize,
+    /// The same, as time: how long a sample waits before it is played.
+    pub queue_ms: u32,
     /// Datagrams thrown away this session, whatever the reason.
     pub refused: u64,
+}
+
+/// Time the phone spends before a sample leaves it: one 10 ms frame plus the capture buffer.
+const PHONE_CAPTURE_MS: u32 = 30;
+
+/// The virtual cable's own buffer on the way to the application using it.
+const OUTPUT_DEVICE_MS: u32 = 10;
+
+/// About how long a word takes to get from the phone's microphone to the application, in ms.
+///
+/// An estimate and labelled as one: the PC can time its own queue exactly and the phone times the
+/// network round trip, but the phone's capture buffer and the cable's are figures for a typical
+/// device. `None` until the phone has reported a round trip, because a number without the network in
+/// it would flatter the app.
+pub fn estimated_delay_ms(queue_ms: u32, rtt_ms: Option<u32>) -> Option<u32> {
+    rtt_ms.map(|rtt| PHONE_CAPTURE_MS + rtt / 2 + queue_ms + OUTPUT_DEVICE_MS)
 }
 
 impl Reading {
@@ -419,6 +437,7 @@ impl Reading {
             lost: 0,
             underruns: 0,
             queue_frames: 0,
+            queue_ms: 0,
             refused: o.refused,
         }
     }
@@ -890,5 +909,20 @@ mod tests {
         assert_eq!(cut.chars().count(), 120);
         assert!(cut.ends_with("..."));
         assert_eq!(truncate("short".to_string(), 120), "short");
+    }
+}
+
+#[cfg(test)]
+mod delay_tests {
+    use super::*;
+
+    #[test]
+    fn the_estimate_adds_the_phone_the_network_the_queue_and_the_cable() {
+        assert_eq!(estimated_delay_ms(60, Some(20)), Some(30 + 10 + 60 + 10));
+    }
+
+    #[test]
+    fn without_a_measured_round_trip_there_is_no_estimate() {
+        assert_eq!(estimated_delay_ms(60, None), None);
     }
 }

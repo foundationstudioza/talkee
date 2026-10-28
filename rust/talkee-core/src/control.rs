@@ -305,13 +305,16 @@ fn handle_pairing(
                     controls.set(Setting::EchoCancel, v);
                 }
             }
-            Ok(ControlMsg::Ping { ts }) => {
+            Ok(ControlMsg::Ping { ts, rtt_ms }) => {
+                if let Some(rtt) = rtt_ms {
+                    controls.set_rtt_ms(rtt);
+                }
                 // The protocol says a peer echoes `ts`, and this is the echo. The guard is what
                 // stops the obvious loop: our own echo coming back carries the same timestamp, so
                 // it is not answered again.
                 if echoed != Some(ts) {
                     echoed = Some(ts);
-                    ControlMsg::Ping { ts }.write_to(&mut writer)?;
+                    ControlMsg::Ping { ts, rtt_ms: None }.write_to(&mut writer)?;
                 }
             }
             Ok(ControlMsg::Stats {

@@ -39,12 +39,22 @@ pub const RATE: u32 = 48_000;
 /// One AEC3 block: 10 ms at [`RATE`].
 const FRAME: usize = 480;
 
-/// How much reference audio may wait to be consumed, in samples (one second).
+/// How much reference audio may wait to be consumed, in samples (300 ms).
 ///
-/// A bound rather than a convenience: if the receive side stalls — no phone connected, for
-/// instance — the loopback thread keeps producing, and an unbounded queue would grow for as long as
-/// the app runs.
-const MAX_PENDING: usize = RATE as usize;
+/// A bound rather than a convenience: if the receive side stalls — no phone connected, or the
+/// microphone muted — the loopback thread keeps producing, and an unbounded queue would grow for as
+/// long as the app runs. It is also a limit on how stale the reference can be when the microphone
+/// comes back: the echo of what the speakers play reaches the PC well under 300 ms later, so
+/// anything older than that is of no use and would only misalign the canceller.
+const MAX_PENDING: usize = RATE as usize * 3 / 10;
+
+/// How far the reference may fall behind the microphone, in blocks (50 ms), before silence is made up.
+///
+/// WASAPI loopback delivers nothing while nothing is playing. If the canceller were fed only what
+/// arrives, its two inputs would slide apart by every second of silence, and each time music started
+/// it would be working out the delay again from scratch. The microphone's own clock is the
+/// timeline: when the speakers fall quiet, the gap is filled with silence, which is what it was.
+const MAX_LAG_BLOCKS: u64 = 5;
 
 /// The way reference audio gets to the canceller. Cheap to clone; safe to push to from any thread.
 #[derive(Clone, Default)]
@@ -131,6 +141,9 @@ pub struct EchoCanceller {
     /// Energy in and out since the last [`EchoCanceller::stats`] reading.
     energy_in: Cell<f64>,
     energy_out: Cell<f64>,
+    /// Microphone blocks seen, and reference blocks handed over (real or made-up silence).
+    mic_blocks: u64,
+    render_blocks: u64,
 }
 
 impl EchoCanceller {
@@ -166,6 +179,8 @@ impl EchoCanceller {
                 stages: (true, suppress_noise),
                 energy_in: Cell::new(0.0),
                 energy_out: Cell::new(0.0),
+                mic_blocks: 0,
+                render_blocks: 0,
             },
             feed,
         )
@@ -194,7 +209,7 @@ impl EchoCanceller {
     /// Whole 10 ms blocks are processed; a trailing partial block is left as it arrived, which in
     /// practice never happens because the phone sends exactly one block per datagram.
     pub fn process(&mut self, samples: &mut [f32]) {
-        self.feed_reference();
+        self.feed_reference((samples.len() / FRAME) as u64);
         if self.stages == (false, false) {
             return;
         }
@@ -218,23 +233,38 @@ impl EchoCanceller {
     ///
     /// Done before the microphone block, every time, because AEC3 needs the far end first: an echo
     /// cannot be predicted from audio the canceller has not seen yet.
-    fn feed_reference(&mut self) {
+    ///
+    /// `incoming` is how many microphone blocks are about to be processed. The reference is kept
+    /// within [`MAX_LAG_BLOCKS`] of the microphone's count by making up silence, because the speakers
+    /// being quiet is exactly when loopback stops delivering.
+    fn feed_reference(&mut self, incoming: u64) {
         loop {
             {
                 let mut queue = self.feed.lock();
                 if queue.len() < FRAME {
-                    return;
+                    break;
                 }
                 for slot in self.src.iter_mut() {
                     *slot = queue.pop_front().unwrap_or(0.0);
                 }
             }
-            // A render failure is a configuration error, not a runtime one; the capture path keeps
-            // working without the reference, and the stats will show no enhancement.
-            let _ = self
-                .apm
-                .process_render_f32(&[&self.src], &mut [&mut self.dest]);
+            self.render_block();
         }
+        self.mic_blocks += incoming;
+        while self.render_blocks + MAX_LAG_BLOCKS < self.mic_blocks {
+            self.src.fill(0.0);
+            self.render_block();
+        }
+    }
+
+    /// Gives the canceller the block in `src` as the next stretch of what the speakers played.
+    fn render_block(&mut self) {
+        self.render_blocks += 1;
+        // A render failure is a configuration error, not a runtime one; the capture path keeps
+        // working without the reference, and the stats will show no enhancement.
+        let _ = self
+            .apm
+            .process_render_f32(&[&self.src], &mut [&mut self.dest]);
     }
 
     /// The canceller's own measurements.
@@ -342,5 +372,51 @@ mod tests {
         let feed = RenderFeed::default();
         feed.push(&vec![0.0; MAX_PENDING * 3]);
         assert_eq!(feed.lock().len(), MAX_PENDING);
+    }
+
+    /// Loopback delivers nothing while the speakers are quiet. The canceller's reference must keep
+    /// time with the microphone anyway, or every silence makes it start the delay search again.
+    #[test]
+    fn a_silent_reference_still_keeps_time_with_the_microphone() {
+        let (mut aec, _feed) = EchoCanceller::new(false);
+        for _ in 0..1_000 {
+            let mut mic = vec![0.0f32; FRAME];
+            aec.process(&mut mic);
+        }
+        let behind = aec.mic_blocks - aec.render_blocks;
+        assert!(behind <= MAX_LAG_BLOCKS, "the reference fell {behind} blocks behind");
+    }
+
+    /// The same after real music has paused: echo that returns after a long silence is cancelled
+    /// again within a couple of seconds.
+    #[test]
+    fn echo_is_cancelled_again_after_a_silence() {
+        let (mut aec, feed) = EchoCanceller::new(false);
+        let mut noise = Noise(11);
+        let delay = 2_880;
+        let rate = RATE as usize;
+        let music: Vec<f32> = (0..rate * 8 + delay).map(|_| noise.next()).collect();
+
+        let run = |aec: &mut EchoCanceller, from: usize, to: usize| -> f32 {
+            let (mut sum, mut n) = (0.0f32, 0.0f32);
+            for (i, block) in (from..to).step_by(FRAME).enumerate() {
+                feed.push(&music[block + delay..block + delay + FRAME]);
+                let mut mic: Vec<f32> = (0..FRAME).map(|k| music[block + k] * 0.4).collect();
+                let before = rms(&mic);
+                aec.process(&mut mic);
+                if i >= (to - from) / FRAME * 3 / 4 {
+                    sum += rms(&mic) / before;
+                    n += 1.0;
+                }
+            }
+            sum / n
+        };
+        run(&mut aec, 0, rate * 4);
+        // Three seconds in which the speakers play nothing and loopback delivers nothing.
+        for _ in 0..300 {
+            aec.process(&mut vec![0.0f32; FRAME]);
+        }
+        let again = run(&mut aec, rate * 4, rate * 8);
+        assert!(again < 0.15, "echo should be cancelled again after the silence; ratio {again}");
     }
 }

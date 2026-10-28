@@ -63,6 +63,8 @@ pub struct Snapshot {
     pub level_in: f32,
     /// Level of the audio leaving into the virtual microphone, 0 to 1.
     pub level_out: f32,
+    /// About how long a word takes from the phone to the application, in ms; 0 when not known yet.
+    pub delay_ms: u32,
 }
 
 impl Snapshot {
@@ -422,7 +424,7 @@ fn status_json(shared: &Arc<Shared>) -> String {
     let c = &shared.controls;
     format!(
         "{{\"cable\":{},\"paired\":{},\"live\":{},\"hasCode\":{},\"headline\":{},\"detail\":{},\"phone\":{},\"problem\":{},\
-\"levelIn\":{:.3},\"levelOut\":{:.3},\"paused\":{},\"noise\":{},\"echo\":{},\"autoLevel\":{},\"update\":{},\"firewall\":{},\"guideDone\":{}}}",
+\"levelIn\":{:.3},\"levelOut\":{:.3},\"paused\":{},\"noise\":{},\"echo\":{},\"autoLevel\":{},\"update\":{},\"firewall\":{},\"guideDone\":{},\"delayMs\":{}}}",
         snapshot.cable,
         // Paired means a phone is connected, not that audio happens to be flowing this instant: a muted
         // phone sends nothing and is still very much paired.
@@ -461,6 +463,7 @@ fn status_json(shared: &Arc<Shared>) -> String {
                 .unwrap_or("unknown")
         ),
         c.get(Setting::GuideDone),
+        snapshot.delay_ms,
     )
 }
 

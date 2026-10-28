@@ -8,7 +8,9 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.net.wifi.WifiManager
 import android.os.IBinder
+import android.os.PowerManager
 
 /**
  * Keeps capture alive when the screen is off or the app is in the background.
@@ -45,11 +47,49 @@ class CaptureService : Service() {
     /** Not a bound service; the plugin talks to [TalkeeEngine] directly. */
     override fun onBind(intent: Intent?): IBinder? = null
 
+    private var cpuLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
+
     override fun onCreate() {
         super.onCreate()
         ensureChannel()
         startForegroundCompat()
+        holdLocks()
         TalkeeEngine.start(applicationContext)
+    }
+
+    /**
+     * Keeps the processor and the Wi-Fi radio awake while streaming.
+     *
+     * A foreground service keeps the process alive; it does not stop the phone from napping the CPU
+     * between audio buffers or putting the Wi-Fi radio into power save when the screen turns off. Both
+     * show up as the same thing from the PC: audio that stutters or stops a minute after the phone goes
+     * in a pocket. Held only while the service runs, and always released.
+     */
+    private fun holdLocks() {
+        runCatching {
+            val power = getSystemService(Context.POWER_SERVICE) as PowerManager
+            cpuLock = power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "talkee:capture").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        }
+        runCatching {
+            val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            @Suppress("DEPRECATION")
+            val mode = WifiManager.WIFI_MODE_FULL_HIGH_PERF
+            wifiLock = wifi.createWifiLock(mode, "talkee:stream").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        }
+    }
+
+    private fun releaseLocks() {
+        runCatching { cpuLock?.takeIf { it.isHeld }?.release() }
+        runCatching { wifiLock?.takeIf { it.isHeld }?.release() }
+        cpuLock = null
+        wifiLock = null
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -60,6 +100,7 @@ class CaptureService : Service() {
 
     override fun onDestroy() {
         TalkeeEngine.stop()
+        releaseLocks()
         super.onDestroy()
     }
 

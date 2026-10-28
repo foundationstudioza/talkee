@@ -1,8 +1,12 @@
 package net.talkee.talkee_app
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
+import android.provider.Settings
 import io.flutter.embedding.engine.plugins.FlutterPlugin
 import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodCall
@@ -33,9 +37,22 @@ class TalkeePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventChanne
     private val handler = Handler(Looper.getMainLooper())
     private val pump = object : Runnable {
         override fun run() {
-            sink?.success(TalkeeEngine.status())
+            sink?.success(statusWithBackground())
             handler.postDelayed(this, STATUS_INTERVAL_MS)
         }
+    }
+
+    /**
+     * The engine's status plus whether the system may stop the app in the background.
+     *
+     * Asked of the system each time rather than remembered, because the person can change it in
+     * settings at any moment and the screen should follow.
+     */
+    private fun statusWithBackground(): Map<String, Any?> {
+        val power = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        val unrestricted = runCatching { power.isIgnoringBatteryOptimizations(context.packageName) }
+            .getOrDefault(true)
+        return TalkeeEngine.status() + ("backgroundAllowed" to unrestricted)
     }
 
     override fun onAttachedToEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -65,7 +82,20 @@ class TalkeePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventChanne
                 CaptureService.stop(context)
                 result.success(null)
             }
-            "status" -> result.success(TalkeeEngine.status())
+            "status" -> result.success(statusWithBackground())
+            // Opens the system's own "let this app run in the background?" dialog. The user decides;
+            // nothing changes unless they say yes there.
+            "allowBackground" -> {
+                runCatching {
+                    context.startActivity(
+                        Intent(
+                            Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                            Uri.parse("package:${context.packageName}"),
+                        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    )
+                }
+                result.success(null)
+            }
             // Drop the connection and pair again now. The retry tap and the "reconnect" control.
             "reconnect" -> {
                 TalkeeEngine.reconnectNow(context)

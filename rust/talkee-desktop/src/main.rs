@@ -81,6 +81,10 @@ const LEVEL_PRINT_INTERVAL: Duration = Duration::from_millis(120);
 /// crashed process in the log.
 const HEARTBEAT: Duration = Duration::from_secs(1);
 
+/// The same, when the log is a file nobody is watching live: a line a minute is plenty to tell a
+/// quiet app from a dead one.
+const FILE_HEARTBEAT: Duration = Duration::from_secs(60);
+
 /// Writes one timestamped line.
 /// Opens the Talkee window, which is where the code and the current state live.
 ///
@@ -240,6 +244,8 @@ fn snapshot_of(engine: &Engine, status: &engine::Status) -> wizard::Snapshot {
             state::OutMeter::Measured(level) => level,
             _ => 0.0,
         },
+        delay_ms: state::estimated_delay_ms(status.reading.queue_ms, engine.controls().rtt_ms())
+            .unwrap_or(0),
     }
 }
 
@@ -429,12 +435,17 @@ fn run(args: Args) -> Result<()> {
 
         let now = Instant::now();
         let bars = format!("{}|{}", status.reading.in_bar(), status.reading.out_bar());
-        if bars != last_bars && now.duration_since(last_level_at) >= LEVEL_PRINT_INTERVAL {
+        // The level line is for watching the app live. Written to the log file it was five lines a
+        // second, and one long run left a 65 MB log.
+        if args.console && bars != last_bars && now.duration_since(last_level_at) >= LEVEL_PRINT_INTERVAL {
             say(started, &status.reading.level_line());
             last_bars = bars;
             last_level_at = now;
             last_heartbeat = now;
-        } else if now.duration_since(last_heartbeat) >= HEARTBEAT {
+        } else if now.duration_since(last_heartbeat) >= if args.console { HEARTBEAT } else { FILE_HEARTBEAT } {
+            if !args.console {
+                logging::rotate_if_large();
+            }
             // The line that proves the app is still there while nothing is happening. It
             // carries the state too, because "no output for a minute" and "no output for a
             // minute because it is still searching" are very different bugs to chase.
