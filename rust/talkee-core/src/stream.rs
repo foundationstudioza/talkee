@@ -287,6 +287,9 @@ pub struct Receiver {
     target_ms: f64,
     /// How much audio the last packet carried, in ms.
     packet_ms: f64,
+    /// When the previous datagram arrived, and the longest wait between two in this health window.
+    last_arrival: Option<Instant>,
+    max_gap: Duration,
 }
 
 impl Receiver {
@@ -340,6 +343,8 @@ impl Receiver {
             clock: Instant::now(),
             target_ms: config.target_frames as f64 * 1000.0 / config.device_rate.max(1) as f64,
             packet_ms: 10.0,
+            last_arrival: None,
+            max_gap: Duration::ZERO,
         })
     }
 
@@ -614,6 +619,10 @@ impl Receiver {
 
         self.stats.datagrams.fetch_add(1, Ordering::Relaxed);
         self.packet_ms = header.frame_duration_ms() as f64;
+        let now = Instant::now();
+        if let Some(previous) = self.last_arrival.replace(now) {
+            self.max_gap = self.max_gap.max(now.duration_since(previous));
+        }
         self.jitter.observe(
             self.clock.elapsed(),
             header.seq,
@@ -807,7 +816,7 @@ impl Receiver {
         };
 
         println!(
-            "recv {:>7} dgram | {dgram_rate} dgram/s | {frame_rate} frames/s | {frame_size} frames/dgram | loss {:>6.2}% ({}) | late {:>5} | slip {:>6} | trim {:>6} | under {:>5} | busy {:>4} | queue {:>6.1} ms | aim {:>4.0} ms | cb {:>5} f | gain {gain}x | ctrl {ctrl} ppm | drift {ppm} ppm | echo {echo}",
+            "recv {:>7} dgram | {dgram_rate} dgram/s | {frame_rate} frames/s | {frame_size} frames/dgram | loss {:>6.2}% ({}) | late {:>5} | slip {:>6} | trim {:>6} | under {:>5} | busy {:>4} | queue {:>6.1} ms | aim {:>4.0} ms | cb {:>5} f | gap {:>4} ms | gain {gain}x | ctrl {ctrl} ppm | drift {ppm} ppm | echo {echo}",
             s.datagrams,
             s.loss_ratio() * 100.0,
             s.frames_lost,
@@ -819,6 +828,7 @@ impl Receiver {
             self.queue.len() as f32 * 1000.0 / device_rate,
             self.target_ms,
             s.callback_frames_max,
+            std::mem::take(&mut self.max_gap).as_millis(),
         );
     }
 }
