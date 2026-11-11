@@ -56,6 +56,9 @@ class CaptureService : Service() {
         startForegroundCompat()
         holdLocks()
         TalkeeEngine.start(applicationContext)
+        // Nothing to stream until the phone is paired, so no microphone notification either. A scan
+        // pairs first and then starts this service again.
+        if (!TalkeeEngine.hasLink()) stopSelf()
     }
 
     /**

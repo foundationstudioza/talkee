@@ -26,7 +26,7 @@ class MainActivity : FlutterActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         // Before `super.onCreate`, deliberately. `super` starts the Flutter engine, Dart starts the
         // audio engine as soon as it has a UI, and the engine reads the pairing store when it starts
-        // — so saving afterwards is a race whose losing side is a phone that streams in the clear.
+        // — so saving afterwards is a race whose losing side is a phone that ignores the link it was given.
         rememberLinkFrom(intent)
         super.onCreate(savedInstanceState)
         ensurePermissions()
@@ -47,6 +47,11 @@ class MainActivity : FlutterActivity() {
      * status stream starts reporting a host.
      */
     private fun rememberLinkFrom(intent: Intent?) {
+        // Debug builds only. This activity is exported (it is the launcher), so in a release build any
+        // other app on the phone could start it with a link to a PC of its own choosing — and the phone
+        // would pair with that PC and stream the microphone to it, sealed with a key the other app
+        // holds. In a release build the camera is the only way a link gets in.
+        if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE == 0) return
         val text = intent?.getStringExtra(EXTRA_LINK) ?: intent?.dataString ?: return
         if (PairLink.parse(text) == null) return
         PairingStore.save(this, text)

@@ -5,8 +5,6 @@ import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
-import android.net.nsd.NsdManager
-import android.net.nsd.NsdServiceInfo
 import android.os.Build
 import android.util.Log
 import android.os.SystemClock
@@ -43,7 +41,7 @@ object TalkeeEngine {
 
     private const val TAG = "Talkee"
 
-    /** mDNS service type; the trailing `.local.` is added by [NsdManager]. */
+    /** mDNS service type; the trailing `.local.` is added by `NsdManager`. Used by [HostFinder]. */
     const val SERVICE_TYPE = "_talkee._tcp"
 
     // --- Wire format. Must match rust/talkee-proto exactly. ---
@@ -72,8 +70,6 @@ object TalkeeEngine {
      */
     private const val RETRY_INTERVAL_MS = 3_000L
 
-    // --- TXT record keys, from docs/PROTOCOL.md. ---
-    private const val TXT_AUDIO_PORT = "ap"
     private const val TXT_VERSION = "v"
 
     // --- States, surfaced to the UI. ---
@@ -107,7 +103,7 @@ object TalkeeEngine {
     @Volatile private var samplesSent: Long = 0
 
     /**
-     * The pairing in force, or null when streaming in the clear.
+     * The pairing in force, or null when not connected to the PC.
      *
      * Non-null means every frame is sealed *and* a socket is being held open: the host drops the
      * session the moment that control connection closes, so simply having this object is what keeps
@@ -130,14 +126,12 @@ object TalkeeEngine {
     @Volatile private var retryThread: Thread? = null
 
     /**
-     * The thread that pairs with a remembered host, or discovers one.
+     * The thread that pairs with the remembered host.
      *
      * Separate from the capture thread because it outlives it: it keeps retrying while there is
      * nothing to stream from, and it must never run on the main thread.
      */
     private var connectThread: Thread? = null
-    private var nsdManager: NsdManager? = null
-    private var discoveryListener: NsdManager.DiscoveryListener? = null
 
     /** A snapshot for the UI. Cheap enough to poll several times a second. */
     fun status(): Map<String, Any?> = mapOf(
@@ -148,8 +142,7 @@ object TalkeeEngine {
         "level" to level,
         "packetsSent" to packetsSent,
         "samplesSent" to samplesSent,
-        // Whether frames are sealed. Distinct from "host", which mDNS can also fill in: a phone that
-        // found a host by discovery is streaming in the clear, and the UI has to be able to say so.
+        // Whether a session with the PC is up. Every frame is sealed; there is no unpaired stream.
         "paired" to (pairing != null),
         // Whether this phone has a link at all, connected or not.
         //
@@ -165,8 +158,11 @@ object TalkeeEngine {
         "error" to lastError,
     )
 
+    /** Whether this phone has a pairing link to stream to. */
+    fun hasLink(): Boolean = link != null || appContext?.let { PairingStore.load(it) } != null
+
     /**
-     * Finds a host and starts streaming. Idempotent: calling it while already
+     * Connects to the paired PC and starts streaming. Idempotent: calling it while already
      * running does nothing, so the UI can call it freely on every resume without
      * the user ever having to ask.
      */
@@ -183,36 +179,37 @@ object TalkeeEngine {
             return
         }
 
-        running.set(true)
-        // Held only so the capture loop can resume discovery after a drop. An
-        // application context is correct here: this singleton lives as long as
-        // the process, and holding an Activity would leak it.
+        // Held so the retry loop can follow the PC by mDNS after its address changes. An application
+        // context is correct here: this singleton lives as long as the process, and holding an
+        // Activity would leak it.
         appContext = context.applicationContext
+
+        // Unpaired, there is nothing to do but wait for a scan. The microphone stays closed and nothing
+        // goes on the network: audio only ever leaves this phone sealed, for the PC it was paired with.
+        val remembered = PairingStore.load(context)?.let { PairLink.parse(it) }
+        if (remembered == null) {
+            Log.i(TAG, "not paired; waiting for a scan")
+            state = STATE_IDLE
+            return
+        }
+
+        running.set(true)
         state = STATE_DISCOVERING
         hostLabel = null
         hostAddress = null
 
-        // A stored link first. It carries the address as well as the key, so a paired phone needs no
-        // discovery at all — which is also what makes pairing work on the networks where mDNS is
-        // blocked: guest Wi-Fi, client isolation, a VPN, or a phone and a PC on different subnets.
+        // The link carries the address as well as the key, so a paired phone needs no discovery —
+        // which is also what makes it work on networks where mDNS is blocked: guest Wi-Fi, client
+        // isolation, a VPN, or a phone and a PC on different subnets.
         //
         // On its own thread, and that is not a detail: `start` is called from the foreground
         // service's `onCreate`, which is the *main* thread, and connecting to a PC that is asleep
         // takes as long as its timeout allows. Doing it inline froze the app on launch whenever the
         // PC was not running — which reads to a user as a crash.
-        val remembered = PairingStore.load(context)?.let { PairLink.parse(it) }
-        if (remembered != null) {
-            // Recorded before the thread starts, so the UI knows from the first status push that this
-            // phone is paired and should not be shown a scanner.
-            link = remembered
-        }
-        val worker = Thread({
-            if (remembered != null) {
-                retryLink(remembered)
-            } else {
-                discover(context)
-            }
-        }, "talkee-connect")
+        // Recorded before the thread starts, so the UI knows from the first status push that this
+        // phone is paired and should not be shown a scanner.
+        link = remembered
+        val worker = Thread({ retryLink(remembered) }, "talkee-connect")
         connectThread = worker
         worker.start()
     }
@@ -220,10 +217,9 @@ object TalkeeEngine {
     /**
      * Keeps trying a remembered host until one answers or the engine stops.
      *
-     * Deliberately *not* a fallback to discovery. A phone holding a link is paired, and quietly
-     * finding some other host — or advertising itself as available for plaintext — would turn "my PC
-     * is asleep" into "my phone is sending audio nobody will accept", which is a much harder thing
-     * for a person to understand. It retries instead, and says only that it is looking.
+     * Only ever this PC. A phone holding a link is paired, and quietly finding some other host would
+     * turn "my PC is asleep" into "my phone is sending audio somewhere else". It retries instead, and
+     * says only that it is looking.
      *
      * Runs on `talkee-connect`. Never call it from the main thread.
      */
@@ -282,11 +278,10 @@ object TalkeeEngine {
         wake.release()
     }
 
-    /** Stops streaming and discovery. Safe to call when already stopped. */
+    /** Stops streaming. Safe to call when already stopped. */
     @Synchronized
     fun stop() {
         running.set(false)
-        stopDiscovery()
         // Interrupted rather than waited for: the connect thread is usually asleep in a retry, and a
         // stop that hangs for three seconds is a stop the user does not believe happened.
         connectThread?.interrupt()
@@ -320,13 +315,6 @@ object TalkeeEngine {
         }
     }
 
-    /**
-     * Pairs with `link` and starts streaming to it. Returns false when that did not work.
-     *
-     * A failure is deliberately *not* an error state. The caller falls back to discovery, because a
-     * phone whose PC has rotated its key, or whose stored link is stale, should still find the host
-     * and stream — reporting why the pairing failed is a bonus, not a precondition.
-     */
     /**
      * Pairs with `link` and starts streaming to it. Returns false when that did not work.
      *
@@ -423,154 +411,23 @@ object TalkeeEngine {
         lastError = message
         state = STATE_ERROR
         running.set(false)
-        stopDiscovery()
-    }
-
-    // ---------------------------------------------------------------------
-    // Discovery
-    // ---------------------------------------------------------------------
-
-    /**
-     * Browses for a host.
-     *
-     * Uses [NsdManager] rather than doing mDNS ourselves, because raw multicast
-     * on Android needs a held `WifiManager.MulticastLock` to stop the radio
-     * filtering packets — a classic silent-failure trap that the platform API
-     * handles for us.
-     */
-    private fun discover(context: Context) {
-        val nsd = context.getSystemService(Context.NSD_SERVICE) as? NsdManager
-        if (nsd == null) {
-            fail("this device has no network service discovery")
-            return
-        }
-        nsdManager = nsd
-
-        val listener = object : NsdManager.DiscoveryListener {
-            override fun onDiscoveryStarted(serviceType: String) = Unit
-
-            override fun onServiceFound(service: NsdServiceInfo) {
-                resolve(service)
-            }
-
-            override fun onServiceLost(service: NsdServiceInfo) {
-                // Losing the host we stream to is detected by the capture loop's
-                // own send failures, which can then reconnect. Nothing here.
-            }
-
-            override fun onDiscoveryStopped(serviceType: String) = Unit
-
-            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
-                fail("could not search for your PC (error $errorCode)")
-            }
-
-            override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) = Unit
-        }
-        discoveryListener = listener
-
-        try {
-            nsd.discoverServices(SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, listener)
-        } catch (e: Exception) {
-            fail("could not start discovery: ${e.message}")
-        }
-    }
-
-    private fun stopDiscovery() {
-        val nsd = nsdManager ?: return
-        val listener = discoveryListener ?: return
-        discoveryListener = null
-        try {
-            nsd.stopServiceDiscovery(listener)
-        } catch (_: Exception) {
-            // Stopping discovery that has already stopped throws on some builds.
-        }
-    }
-
-    /**
-     * Resolves a found service to an address.
-     *
-     * `NsdManager` permits only **one** resolve at a time and calls
-     * `onResolveFailed` with `FAILURE_ALREADY_ACTIVE` if you break that rule.
-     * Since `onServiceFound` can fire in bursts, resolutions are serialised here
-     * with a single pending slot: an in-flight resolve queues at most one
-     * successor, and the queue is drained on completion *or* failure. Without
-     * this, discovery works right up until a second device appears — or up until
-     * the first attempt fails — and then goes permanently silent.
-     */
-    private val resolving = AtomicBoolean(false)
-    @Volatile private var pendingResolve: NsdServiceInfo? = null
-
-    private fun resolve(service: NsdServiceInfo) {
-        val nsd = nsdManager ?: return
-        if (!resolving.compareAndSet(false, true)) {
-            pendingResolve = service
-            return
-        }
-        try {
-            nsd.resolveService(service, object : NsdManager.ResolveListener {
-                override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                    // Not fatal: a burst of resolves often fails a few before one
-                    // succeeds, and the service is re-announced periodically.
-                    resolving.set(false)
-                    drainPending()
-                }
-
-                override fun onServiceResolved(serviceInfo: NsdServiceInfo) {
-                    resolving.set(false)
-                    val address = serviceInfo.host
-                    if (address != null && running.get() && state != STATE_STREAMING) {
-                        onHostFound(serviceInfo, address)
-                    }
-                    drainPending()
-                }
-            })
-        } catch (e: Exception) {
-            resolving.set(false)
-            drainPending()
-        }
-    }
-
-    private fun drainPending() {
-        val next = pendingResolve ?: return
-        pendingResolve = null
-        // Only chase more hosts if we still need one.
-        if (running.get() && state != STATE_STREAMING) resolve(next)
-    }
-
-    /**
-     * Reads the audio port out of the TXT record, falling back to the SRV port.
-     *
-     * A service has only one SRV port, and we need two (control and audio), so
-     * the audio port travels in TXT. The fallback keeps a host that published
-     * nothing usable reachable rather than producing port 0.
-     */
-    private fun audioPortOf(serviceInfo: NsdServiceInfo): Int {
-        val raw = serviceInfo.attributes?.get(TXT_AUDIO_PORT)?.toString(Charsets.UTF_8)
-        return raw?.toIntOrNull()?.takeIf { it in 1..65535 } ?: serviceInfo.port
     }
 
     // ---------------------------------------------------------------------
     // Capture
     // ---------------------------------------------------------------------
 
-    /** Application context, only so the capture loop can resume discovery. */
+    /** Application context, so the retry loop can look for a PC that moved. */
     @Volatile private var appContext: Context? = null
 
-    /** Guards against two capture threads when discovery resolves in a burst. */
+    /** Guards against two capture threads starting at once. */
     private val starting = AtomicBoolean(false)
-
-    private fun onHostFound(serviceInfo: NsdServiceInfo, address: InetAddress) {
-        val port = audioPortOf(serviceInfo)
-        hostLabel = serviceInfo.serviceName
-        hostAddress = "${address.hostAddress}:$port"
-        startCapture(address, port)
-    }
 
     /**
      * Starts the capture thread, unless one is already starting.
      *
-     * A resolve burst can deliver several hosts at once, and only the first may claim the
-     * microphone — which is what the flag is for, and why this is the single door into streaming.
+     * Only one thread may claim the microphone, which is what the flag is for, and why this is the
+     * single door into streaming.
      */
     private fun startCapture(address: InetAddress, port: Int) {
         if (!starting.compareAndSet(false, true)) return
@@ -578,7 +435,6 @@ object TalkeeEngine {
             starting.set(false)
             return
         }
-        stopDiscovery()
         val thread = Thread({ captureLoop(address, port) }, "talkee-capture")
         captureThread = thread
         // Audio must not be preempted by UI work.
@@ -747,31 +603,24 @@ object TalkeeEngine {
             starting.set(false)
 
             // If we stopped because something broke rather than because the user
-            // asked us to, go back to looking for the host. This is what lets the
+            // asked us to, go back to the PC. This is what lets the
             // app survive the PC sleeping, a Wi-Fi roam, or the desktop being
             // restarted — with no user involvement whatsoever.
             if (running.get()) {
                 state = STATE_DISCOVERING
                 hostLabel = null
                 hostAddress = null
-                // A paired phone goes straight back to the host it already knows rather than
-                // searching for one: the link it holds is the whole reason discovery is optional.
+                // Keeps trying the PC it knows, on its own thread so this one can finish.
                 val remembered = link
+                pairing?.connection?.close()
+                pairing = null
                 if (remembered != null) {
-                    // Keeps trying the PC it knows, on its own thread so this one can finish. Never
-                    // falls back to discovery: see `retryLink`.
-                    pairing?.connection?.close()
-                    pairing = null
                     val worker = Thread({ retryLink(remembered) }, "talkee-connect")
                     connectThread = worker
                     worker.start()
                 } else {
-                    val context = appContext
-                    if (context != null) {
-                        discover(context)
-                    } else {
-                        running.set(false)
-                    }
+                    running.set(false)
+                    state = STATE_IDLE
                 }
             }
         }
@@ -812,17 +661,17 @@ object TalkeeEngine {
     }
 
     private fun buildPacket(seq: Int, tsMs: Int, samples: Int, pcm: FloatArray): ByteArray {
+        // Always sealed. There is no plaintext path: a frame without a session is a bug, not a mode.
+        val session = requireNotNull(pairing) { "audio is only sent in a pairing" }
         val plainBytes = samples * BYTES_PER_SAMPLE
-        val session = pairing
-        // A sealed payload is the plaintext plus a nonce and a tag, and the header says so: the
-        // receiver checks `payload_len` against the sample count and the flag, so a frame that
+        // The receiver checks `payload_len` against the sample count and the flag, so a frame that
         // declared one without the other is rejected rather than misparsed.
-        val payloadLen = if (session == null) plainBytes else plainBytes + Crypto.AEAD_OVERHEAD
+        val payloadLen = plainBytes + Crypto.AEAD_OVERHEAD
 
         val buffer = ByteBuffer.allocate(HEADER_LEN + payloadLen).order(ByteOrder.LITTLE_ENDIAN)
         buffer.putShort(MAGIC.toShort())
         buffer.put(PROTOCOL_VERSION.toByte())
-        buffer.put(if (session == null) 0.toByte() else FLAG_ENCRYPTED.toByte())
+        buffer.put(FLAG_ENCRYPTED.toByte())
         buffer.putInt(seq)
         buffer.putInt(tsMs)
         buffer.putInt(SAMPLE_RATE)
@@ -831,21 +680,14 @@ object TalkeeEngine {
         buffer.put(FMT_F32.toByte())
         buffer.putInt(payloadLen)
 
-        if (session == null) {
-            for (i in 0 until samples) buffer.putFloat(pcm[i])
-        } else {
-            // Two short-lived arrays the plain path does not need, because GCM works on bytes rather
-            // than floats. At a hundred frames a second that is two hundred small allocations, which
-            // the young generation absorbs — noted so a future reader knows it was considered rather
-            // than overlooked.
-            val plain = ByteArray(plainBytes)
-            ByteBuffer.wrap(plain).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().put(pcm, 0, samples)
-            // The header is the associated data: the host opens with the same 24 bytes, so every
-            // field in it is authenticated along with the audio. It has been fully written by now.
-            val header = buffer.array().copyOfRange(0, HEADER_LEN)
-            // The sequence number is the nonce, so it has to be the same value the header carries.
-            buffer.put(Crypto.seal(session.sessionKey, Crypto.PHONE_TO_DESKTOP, seq, plain, header))
-        }
+        // GCM works on bytes rather than floats, hence the copy.
+        val plain = ByteArray(plainBytes)
+        ByteBuffer.wrap(plain).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().put(pcm, 0, samples)
+        // The header is the associated data: the host opens with the same 24 bytes, so every field in
+        // it is authenticated along with the audio. It has been fully written by now.
+        val header = buffer.array().copyOfRange(0, HEADER_LEN)
+        // The sequence number is the nonce, so it has to be the same value the header carries.
+        buffer.put(Crypto.seal(session.sessionKey, Crypto.PHONE_TO_DESKTOP, seq, plain, header))
         return buffer.array()
     }
 }

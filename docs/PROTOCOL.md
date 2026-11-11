@@ -354,9 +354,12 @@ speaking through your microphone.
 The developer receiver `talkee host` is the other way round: plaintext by default, so it can be used
 for measurement with nothing to set up, and `--secure` (or `--key`) to make it pair like the app.
 
-A phone with no pairing that finds a PC over mDNS still sends unsealed frames, and a desktop in its
-default mode drops them. That path exists for `talkee host` and `--no-pairing`; it carries nothing
-to a default desktop.
+The phone never sends unsealed audio. Until it has scanned a code it keeps the microphone closed and
+sends nothing; after that it streams only to the PC it paired with. Plaintext on the wire therefore
+only ever comes from `talkee send`.
+
+A pairing link reaches the phone only through its own camera. Release builds ignore a link handed to
+the app by another app, because that would let it point the microphone at a PC of its choosing.
 
 ## What is deliberately *not* here
 

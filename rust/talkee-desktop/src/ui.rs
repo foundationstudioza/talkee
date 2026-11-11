@@ -62,17 +62,20 @@ pub fn startup_lines(report: &StartReport) -> Vec<String> {
     }
     // Which security mode this is running in, said plainly. The two failure modes are opposite and
     // both are invisible from the microphone end: plaintext means a stranger on this network can
-    // speak through it, and `--secure` with no phone paired means it simply stays silent.
+    // speak through it, and pairing with no phone paired means it simply stays silent.
+    //
+    // The link itself is never printed: it carries the key, and this goes to a log file that any
+    // program the user runs can read. The window shows it as a code, which is the only place it belongs.
     match (&report.pairing_link, &report.pairing_note) {
-        (Some(link), note) => {
-            lines.push(format!("pairing  : {link}"));
+        (Some(_), note) => {
+            lines.push("pairing  : on — scan the code in the Talkee window".to_string());
             if let Some(note) = note {
                 lines.push(format!("           ({note})"));
             }
         }
         (None, _) => lines.push(
-            "pairing  : off — plaintext audio is accepted from anyone who can reach this port; \
-             pass --secure to require a pairing"
+            "pairing  : off (--no-pairing) — plaintext audio is accepted from anyone who can reach \
+             this port"
                 .to_string(),
         ),
     }
@@ -218,6 +221,18 @@ mod tests {
         assert!(text.contains("192.168.0.24:47801"), "{text}");
         assert!(text.contains("Talkee on DESKTOP"), "{text}");
         assert!(text.contains("CABLE Output"), "{text}");
+    }
+
+    #[test]
+    fn the_startup_lines_never_carry_the_pairing_key() {
+        let paired = StartReport {
+            pairing_link: Some("talkee://pair?v=1&h=1.2.3.4&p=47800&fpid=ab&name=X&k=SECRETKEY".to_string()),
+            ..report()
+        };
+        let text = startup_lines(&paired).join("\n");
+        assert!(!text.contains("SECRETKEY"), "the key reached the log: {text}");
+        assert!(!text.contains("talkee://"), "the link reached the log: {text}");
+        assert!(text.contains("pairing  : on"), "{text}");
     }
 
     #[test]
