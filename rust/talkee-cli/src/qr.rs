@@ -117,8 +117,8 @@ mod tests {
         let grid = qr_matrix(LINK).expect("encodes");
         let size = grid.len();
         assert!(size > QUIET_ZONE * 2);
-        for i in 0..size {
-            assert!(!grid[0][i], "the top border is not clear");
+        for (i, top) in grid[0].iter().enumerate() {
+            assert!(!top, "the top border is not clear");
             assert!(!grid[size - 1][i], "the bottom border is not clear");
             assert!(!grid[i][0], "the left border is not clear");
             assert!(!grid[i][size - 1], "the right border is not clear");

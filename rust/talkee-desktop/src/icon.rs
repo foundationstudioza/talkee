@@ -2,7 +2,7 @@
 //!
 //! # The icon is the level meter
 //!
-//! There is no window in this app, so the icon has to carry both facts the user
+//! The window is closed most of the time, so the icon has to carry both facts the user
 //! needs: which of the four states is current, and how loud the audio is on each side
 //! of the pipeline. That is why it is drawn rather than loaded from a file — an icon
 //! that moves with the audio cannot be a static asset — and drawing it here makes the

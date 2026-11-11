@@ -10,7 +10,7 @@
 //! # Why it prints
 //!
 //! Every state transition goes to stdout with an elapsed timestamp. That is not debug
-//! output left in by accident: the app has no window, so the log *is* the only complete
+//! output left in by accident: the window is usually closed, so the log *is* the only complete
 //! record of what the tray was showing, and it is how a run can be verified without
 //! looking at a taskbar. It is also the fastest thing to ask a user for when they report
 //! that "it stopped working".
@@ -35,7 +35,6 @@ mod icon;
 mod logging;
 mod message_pump;
 #[cfg(windows)]
-mod pairing;
 #[cfg(windows)]
 mod setup;
 #[cfg(windows)]
@@ -85,12 +84,10 @@ const HEARTBEAT: Duration = Duration::from_secs(1);
 /// quiet app from a dead one.
 const FILE_HEARTBEAT: Duration = Duration::from_secs(60);
 
-/// Writes one timestamped line.
 /// Opens the Talkee window, which is where the code and the current state live.
 ///
 /// The tray item and the first-run path both come here. One surface: whatever the user opens, they see
-/// the same window, saying the same thing about the same run. If the window cannot start, the page in
-/// the browser is the fallback, so there is always somewhere to scan the code.
+/// the same window, saying the same thing about the same run.
 #[cfg(windows)]
 fn show_window(
     wizard: Option<&wizard::Wizard>,
@@ -102,9 +99,7 @@ fn show_window(
         return;
     };
     if let Err(e) = window::spawn(wizard, child) {
-        let url = wizard.url();
-        say(started, &format!("{e:#}; opening {url} in your browser instead"));
-        let _ = shell::open(&url);
+        say(started, &format!("could not open the window: {e:#}"));
     }
 }
 
@@ -199,27 +194,16 @@ fn start_session(engine: &mut Engine, wizard: Option<&wizard::Wizard>, started: 
     }
 }
 
-/// Tells the wizard which code to show, and opens it.
-///
-/// The page is served rather than written to a file now: it is the same surface, except that it can
-/// also report what is happening and cannot go stale. Opening it at startup rather than only from the
-/// tray menu matters for the same reason it did before — a code that exists only behind a menu item is
-/// a code that half the people who need it never find, and showing the code is the whole of the
-/// desktop side's first-run job.
+/// Tells the window which code to show.
 fn announce_pairing(wizard: Option<&wizard::Wizard>, link: Option<&str>, started: Instant) {
     let Some(wizard) = wizard else {
         return;
     };
     wizard.set_link(link);
-    let url = wizard.url();
-    if link.is_none() {
-        say(
-            started,
-            "pairing  : off — the wizard will say so; no code is needed",
-        );
-        return;
-    }
-    say(started, &format!("wizard   : {url}"));
+    say(
+        started,
+        if link.is_some() { "pairing  : on — the window shows the code" } else { "pairing  : off — no code is needed" },
+    );
 }
 
 /// Reads what the wizard should say out of the app's own state.
@@ -544,7 +528,7 @@ fn main() -> ExitCode {
             println!("{USAGE}");
             ExitCode::SUCCESS
         }
-        Ok(Command::Run(args)) => match {
+        Ok(Command::Run(args)) => {
             // Already running? Open its window and leave, instead of fighting it for the ports and
             // adding a second, dead icon to the tray.
             #[cfg(windows)]
@@ -560,14 +544,14 @@ fn main() -> ExitCode {
             }
             let log = logging::init(args.console);
             println!("talkee-app: logging to {log}");
-            run(*args)
-        } {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(e) => {
-                eprintln!("talkee-app: {e:#}");
-                ExitCode::FAILURE
+            match run(*args) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(e) => {
+                    eprintln!("talkee-app: {e:#}");
+                    ExitCode::FAILURE
+                }
             }
-        },
+        }
         Err(message) => {
             eprintln!("talkee-app: {message}");
             ExitCode::FAILURE

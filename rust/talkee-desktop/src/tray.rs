@@ -78,7 +78,7 @@ pub struct Tray {
     phone_item: MenuItem,
     /// The four live switches. Check marks, because a switch should show what it is, not what
     /// pressing it would do. They are rewritten from [`LiveControls`] on every update, so a change
-    /// made on the phone or in the dashboard shows up here without anyone touching the menu.
+    /// made on the phone or in the window shows up here without anyone touching the menu.
     mic_item: CheckMenuItem,
     noise_item: CheckMenuItem,
     echo_item: CheckMenuItem,

@@ -1,6 +1,6 @@
 //! Settings that can change while the app runs, and that more than one thing can change.
 //!
-//! The tray, the browser dashboard and the phone can all turn the same switches, and the audio thread
+//! The tray, the window and the phone can all turn the same switches, and the audio thread
 //! reads them on every frame. One shared value is what keeps them from disagreeing: every writer
 //! goes through [`LiveControls::set`], every reader looks at the same atomics, and a version number
 //! tells the control connection when there is something new to tell the phone.

@@ -8,14 +8,13 @@
 //! and the user selects that cable's capture endpoint as their microphone.
 //! `talkee probe` prints exactly which endpoint to select.
 //!
-//! # Why cpal for M0
+//! # Why cpal
 //!
-//! Raw WASAPI would let us match the device mix format exactly and opt into
-//! `IAudioClient3` low-latency shared streams, worth several milliseconds. But
-//! the M0 question is "does the pipeline work at all", not "is it minimal
-//! latency" — and cpal also covers CoreAudio and PipeWire, so we get three
-//! platforms from one implementation. M1 replaces the Windows path with a
-//! hand-written WASAPI backend behind the same [`VirtualMicWriter`] trait.
+//! Raw WASAPI would let us opt into `IAudioClient3` low-latency shared streams,
+//! worth a few milliseconds. That was judged not worth it: in use the delay is
+//! not noticeable, and cpal also covers CoreAudio and PipeWire, so a future
+//! macOS or Linux build gets its output from the same code. If it is ever
+//! wanted, it goes behind the same [`VirtualMicWriter`] trait.
 
 #![forbid(unsafe_code)]
 
@@ -428,81 +427,6 @@ where
     Ok(stream)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::time::Duration;
-    use talkee_core::Stats;
-
-    #[test]
-    fn an_empty_block_has_no_peak() {
-        assert_eq!(peak_abs(&[]), 0.0);
-        assert_eq!(peak_abs(&[0.0; 64]), 0.0);
-    }
-
-    #[test]
-    fn the_peak_is_absolute_so_both_polarities_count() {
-        assert_eq!(peak_abs(&[0.25, -0.5, 0.125]), 0.5);
-        assert_eq!(peak_abs(&[-1.0, 0.5]), 1.0);
-        // Above full scale is reported as-is: clipping is information the user
-        // needs, and clamping it would hide the one number that explains a
-        // distorted microphone.
-        assert_eq!(peak_abs(&[1.75]), 1.75);
-    }
-
-    #[test]
-    fn samples_that_are_not_numbers_never_become_the_peak() {
-        // A NaN that reached the meter would leave it reading NaN forever, and
-        // the desktop app would have no way to tell that from a real reading.
-        assert!(peak_abs(&[f32::NAN, 0.5, f32::NAN]).is_finite());
-        assert_eq!(peak_abs(&[f32::NAN, 0.5]), 0.5);
-        assert_eq!(peak_abs(&[f32::INFINITY, 0.25]), 0.25);
-        assert_eq!(peak_abs(&[f32::NEG_INFINITY]), 0.0);
-    }
-
-    /// End-to-end proof that the audio callback publishes the level it wrote.
-    ///
-    /// Ignored by default, because it needs a real virtual cable and therefore
-    /// cannot run in CI: `cargo test --workspace` must stay clean on a machine
-    /// with no cable installed. Run it by hand on one that has:
-    ///
-    /// ```text
-    /// cargo test -p talkee-vmic -- --ignored --nocapture
-    /// ```
-    #[test]
-    #[ignore = "needs a virtual cable installed on this machine"]
-    fn the_audio_callback_publishes_the_peak_it_wrote() {
-        // Quiet enough not to be unpleasant if something is listening to the
-        // cable's other end while this runs.
-        const AMPLITUDE: f32 = 0.02;
-
-        let found = find_virtual_cable().expect("enumerating output devices");
-        let Some((endpoint, _family)) = found else {
-            // No cable, nothing to prove, and not a reason to fail a hand-run.
-            eprintln!("talkee: no virtual cable on this machine; skipping");
-            return;
-        };
-
-        let stats = Arc::new(Stats::new());
-        let queue = Arc::new(SharedQueue::new(96_000, Arc::clone(&stats)));
-        let writer = open_output(&endpoint, Arc::clone(&queue), None).expect("opening the cable");
-
-        // Half a second of tone, which outlasts the sleep below at any device
-        // rate we are likely to meet, so the callback cannot run dry and report
-        // the silence it pads with instead of the audio we sent.
-        queue.push(&[AMPLITUDE; 48_000]);
-        std::thread::sleep(Duration::from_millis(250));
-
-        assert_eq!(
-            stats.output_level(),
-            AMPLITUDE,
-            "the callback must publish the peak of what it wrote, not `level_in`"
-        );
-        // Keep the writer alive until after the assertion: dropping it closes the
-        // stream, and a closed stream writes nothing.
-        drop(writer);
-    }
-}
 
 
 
@@ -592,4 +516,80 @@ where
         endpoint: name,
         sample_rate,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+    use talkee_core::Stats;
+
+    #[test]
+    fn an_empty_block_has_no_peak() {
+        assert_eq!(peak_abs(&[]), 0.0);
+        assert_eq!(peak_abs(&[0.0; 64]), 0.0);
+    }
+
+    #[test]
+    fn the_peak_is_absolute_so_both_polarities_count() {
+        assert_eq!(peak_abs(&[0.25, -0.5, 0.125]), 0.5);
+        assert_eq!(peak_abs(&[-1.0, 0.5]), 1.0);
+        // Above full scale is reported as-is: clipping is information the user
+        // needs, and clamping it would hide the one number that explains a
+        // distorted microphone.
+        assert_eq!(peak_abs(&[1.75]), 1.75);
+    }
+
+    #[test]
+    fn samples_that_are_not_numbers_never_become_the_peak() {
+        // A NaN that reached the meter would leave it reading NaN forever, and
+        // the desktop app would have no way to tell that from a real reading.
+        assert!(peak_abs(&[f32::NAN, 0.5, f32::NAN]).is_finite());
+        assert_eq!(peak_abs(&[f32::NAN, 0.5]), 0.5);
+        assert_eq!(peak_abs(&[f32::INFINITY, 0.25]), 0.25);
+        assert_eq!(peak_abs(&[f32::NEG_INFINITY]), 0.0);
+    }
+
+    /// End-to-end proof that the audio callback publishes the level it wrote.
+    ///
+    /// Ignored by default, because it needs a real virtual cable and therefore
+    /// cannot run in CI: `cargo test --workspace` must stay clean on a machine
+    /// with no cable installed. Run it by hand on one that has:
+    ///
+    /// ```text
+    /// cargo test -p talkee-vmic -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore = "needs a virtual cable installed on this machine"]
+    fn the_audio_callback_publishes_the_peak_it_wrote() {
+        // Quiet enough not to be unpleasant if something is listening to the
+        // cable's other end while this runs.
+        const AMPLITUDE: f32 = 0.02;
+
+        let found = find_virtual_cable().expect("enumerating output devices");
+        let Some((endpoint, _family)) = found else {
+            // No cable, nothing to prove, and not a reason to fail a hand-run.
+            eprintln!("talkee: no virtual cable on this machine; skipping");
+            return;
+        };
+
+        let stats = Arc::new(Stats::new());
+        let queue = Arc::new(SharedQueue::new(96_000, Arc::clone(&stats)));
+        let writer = open_output(&endpoint, Arc::clone(&queue), None).expect("opening the cable");
+
+        // Half a second of tone, which outlasts the sleep below at any device
+        // rate we are likely to meet, so the callback cannot run dry and report
+        // the silence it pads with instead of the audio we sent.
+        queue.push(&[AMPLITUDE; 48_000]);
+        std::thread::sleep(Duration::from_millis(250));
+
+        assert_eq!(
+            stats.output_level(),
+            AMPLITUDE,
+            "the callback must publish the peak of what it wrote, not `level_in`"
+        );
+        // Keep the writer alive until after the assertion: dropping it closes the
+        // stream, and a closed stream writes nothing.
+        drop(writer);
+    }
 }

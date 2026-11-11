@@ -93,6 +93,8 @@ impl AudioHeader {
     /// always one the far end accepts. A sender and a receiver holding two
     /// opinions about what a valid frame is happens to be the bug this function
     /// exists to make impossible.
+    // One argument per header field: grouping them would only move the same list into a struct.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_variable_len(
         seq: u32,
         ts_ms: u32,

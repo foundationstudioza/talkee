@@ -9,12 +9,10 @@
 //! seconds** of accumulated audio. Uncorrected, that shows up as a periodic
 //! click then a growing delay into the hundreds of milliseconds.
 //!
-//! M0 does the crude thing: [`LinearResampler`] handles the *nominal* rate
-//! difference (e.g. phone at 48 kHz, virtual cable at 44.1 kHz), while
-//! [`crate::queue::SharedQueue`] absorbs residual drift by dropping the oldest
-//! samples when it overflows. M1 replaces the crude part with a PI controller
-//! driving `LinearResampler::set_ratio` — the resampler is already built to
-//! accept that, which is why it is not hard-coded to a fixed ratio.
+//! [`LinearResampler`] handles the *nominal* rate difference (e.g. phone at
+//! 48 kHz, virtual cable at 44.1 kHz), and [`crate::controller::DepthController`]
+//! trims its ratio through `LinearResampler::set_ratio` to absorb the residual
+//! drift — which is why the ratio is not hard-coded.
 //!
 //! Measuring *how far* the two rates actually are apart is a separate concern and
 //! lives in [`crate::meter`]. It used to live here, and moving it out is part of

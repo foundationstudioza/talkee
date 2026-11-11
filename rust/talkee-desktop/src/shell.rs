@@ -35,36 +35,6 @@ fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// Opens a path or a URL with whatever the user has associated with it.
-///
-/// The `open` shell verb rather than a hard-coded browser: it resolves the user's own default, works
-/// wherever that browser is installed, and reports failure instead of silently doing nothing. Takes a
-/// string rather than a `Path` because the wizard is a URL and the installer is a path, and they are
-/// opened by exactly the same call.
-pub fn open(target: &str) -> Result<()> {
-    use windows_sys::Win32::UI::Shell::ShellExecuteW;
-    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-
-    let verb = wide("open");
-    let file = wide(target);
-
-    let code = unsafe {
-        ShellExecuteW(
-            std::ptr::null_mut(),
-            verb.as_ptr(),
-            file.as_ptr(),
-            std::ptr::null(),
-            std::ptr::null(),
-            SW_SHOWNORMAL,
-        )
-    } as isize;
-
-    if code <= SHELL_FAILURE_CEILING {
-        bail!("Windows would not open {target} (code {code})");
-    }
-    Ok(())
-}
-
 /// Runs `exe` with `args`, elevated, and returns as soon as Windows has launched it.
 ///
 /// The `runas` verb is what raises the consent prompt, and there is no way around it for
@@ -111,7 +81,7 @@ mod tests {
     #[test]
     fn a_wide_string_is_nul_terminated_and_utf16() {
         // An un-terminated buffer here reads off the end of the allocation, and the failure
-        // is a browser opening on a garbage URL rather than a crash, which is the kind of
+        // is a prompt for a garbage path rather than a crash, which is the kind of
         // thing that never gets reported.
         let encoded = wide("aé");
         assert_eq!(encoded.len(), 3, "two characters plus the terminator");
@@ -125,6 +95,5 @@ mod tests {
         // Pinned because the comparison is `<=` against a magic number that is easy to
         // "tidy" into a wrong shape. 32 is a failure, 33 is the smallest success.
         assert_eq!(SHELL_FAILURE_CEILING, 32);
-        assert!(33 > SHELL_FAILURE_CEILING);
     }
 }

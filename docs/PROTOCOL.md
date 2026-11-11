@@ -1,7 +1,8 @@
 # Talkee wire protocol
 
 This document is the contract. It is written down **once**, here, and implemented
-twice — currently in Rust on both sides, later in Dart/Kotlin for the phone. The
+twice: in Rust on the PC (`rust/talkee-proto`, `rust/talkee-crypto`) and in Kotlin on the
+phone (`app/android/.../talkee_app`). The
 alternative is discovering that two implementations disagree, in the field, in the
 shape of audio that sounds fine but clips.
 
@@ -134,10 +135,10 @@ wrap from `u32::MAX` to `0` is seen as on time rather than as a four-billion-fra
 gap.
 
 The replay rule for encrypted audio is **stricter**: see
-[M2 payload: sealed audio](#m2-payload-sealed-audio). It is not a window, and it
+[Sealed audio payload](#sealed-audio-payload). It is not a window, and it
 does not use `expected`.
 
-### M0 payload: raw PCM, `format = 0` and `format = 1`
+### Raw PCM payload, `format = 0` and `format = 1`
 
 Raw interleaved PCM. At 48 kHz mono f32 that is **~1.6 Mbps**, which is fine on a
 LAN and indefensible over anything else. That number is the entire argument for the
@@ -147,7 +148,7 @@ Multi-channel payloads are averaged down to mono on receipt. Averaging rather th
 taking channel 0 is deliberate: a stereo stream with one dead channel still
 produces usable audio.
 
-### M1 payload: Opus, `format = 2`
+### Opus payload, `format = 2`
 
 One Opus packet per datagram, encoded by the sender at the requested sample rate
 (48 kHz), channels (1) and frame duration (10 ms), targeting 64 kbps.
@@ -165,7 +166,7 @@ One Opus packet per datagram, encoded by the sender at the requested sample rate
   frame, `DTX` means the encoder was in discontinuous transmission and the packet is
   a comfort-noise marker, and `REDUNDANT` means this is a duplicate of an earlier
   frame sent to survive loss. None of the three changes how a packet is parsed.
-### M2 payload: sealed audio
+### Sealed audio payload
 
 With `ENCRYPTED` set the payload is `[12-byte nonce][ciphertext][16-byte tag]`:
 AES-256-GCM, authenticated with the 24-byte header as associated data, encrypted
@@ -233,7 +234,7 @@ session key = acbcb7a70f5e3ba04af029614c9d5959ab97d297fc807264dc30e6f4d3b9af49
 
 The session key is never sent; the vector is published so that a second
 implementation can prove it derives the same key rather than assuming it does.
-## Control channel (M2)
+## Control channel
 
 Newline-delimited JSON over TCP, port 47800. `type` is the discriminant and matches
 the enum in `talkee-proto::ControlMsg`. One JSON object per line, `\n` terminated,
@@ -267,7 +268,7 @@ which accepts any sealed frame whose sequence number is ahead of what it has see
 answer its own echo, or two peers will ping each other until one of them is closed —
 the reference implementation ignores a `PING` whose `ts` it has just echoed.
 
-## Pairing (M2)
+## Pairing
 
 The desktop generates a 32-byte key from the OS random number generator and shows it
 once as a QR code / deep link:
@@ -332,12 +333,10 @@ phone                                     desktop
 
 ### Key handling
 
-* `k` is displayed once, in the deep link, and nowhere else. The reference host draws
-  a fresh key for every run and does not persist it: a process that never writes the
-  key to disk is a process that cannot leak it from disk. Persisting a pairing, so a
-  phone can reconnect without scanning a new code, is the platform keystore's job —
-  Windows DPAPI on the desktop, Android Keystore on the phone — and never a plain
-  config file.
+* `k` is shown in the pairing QR code and nowhere else. The key belongs to the machine, not the
+  process: the desktop stores it with Windows DPAPI (`%APPDATA%\Talkee\pairing.dat`, see
+  `rust/talkee-store`) and the phone stores the link with an Android Keystore key, so a phone pairs
+  once. It is never written to a plain config file.
 * Anything that prints a key prints a redacted form. Both the `Debug` and `Display`
   of the key type in `talkee-crypto` print the fingerprint and not the key, and
   nothing in the pairing path echoes an input that contains one.
@@ -346,37 +345,18 @@ phone                                     desktop
   link, where it costs an attacker 2^32 work per candidate key to invert — and a
   candidate that matches is a key they would have had to guess outright.
 
-### `--secure`: how the desktop is told to accept nothing unpaired
+### Plaintext is refused by default
 
-The host accepts plaintext audio **by default**: no key is generated, no link is
-printed, and the startup banner says so in plain words. The default is the path that
-works, and that is a deliberate, temporary trade rather than a finished decision. The
-phone app cannot encrypt yet, so a host that demanded a pairing it can never receive
-would present a working-looking screen attached to a dead microphone - and a user has
-no way to tell that apart from "my phone is broken".
+The desktop app accepts only sealed audio from a paired phone. `talkee-app --no-pairing` turns that
+off, and the startup log says so, because its failure mode is a stranger on the same network
+speaking through your microphone.
 
-Passing `--secure` (or `--key`) changes it: the host generates or loads a key, opens
-the pairing channel, prints the deep link, and refuses any datagram that is not sealed
-with a proof of that key. The phone must pair before a single frame is played.
+The developer receiver `talkee host` is the other way round: plaintext by default, so it can be used
+for measurement with nothing to set up, and `--secure` (or `--key`) to make it pair like the app.
 
-Both defaults have a failure mode, which is why the startup banner states which one is
-in force:
-
-| Mode | Failure mode |
-|---|---|
-| plaintext (default) | A stranger on a network you do not control can speak through your microphone |
-| `--secure` | The phone cannot pair yet, so the microphone stays silent |
-
-**This default flips to `--secure` as soon as the phone side can pair.** It exists in
-this shape only so that the working path keeps working while that lands.
-
-## What changes later
-
-| Milestone | Change |
-|---|---|
-| M1 | `format = 2` (Opus); `FEC`, `DTX` and `REDUNDANT` become meaningful; effective payload drops to ~200 bytes |
-| M2 | `ENCRYPTED` comes into use; control channel and pairing go live |
-| M4 | USB transport (TCP over `adb reverse`, or over a tethered interface) reuses identical framing — only the socket changes |
+A phone with no pairing that finds a PC over mDNS still sends unsealed frames, and a desktop in its
+default mode drops them. That path exists for `talkee host` and `--no-pairing`; it carries nothing
+to a default desktop.
 
 ## What is deliberately *not* here
 
@@ -387,8 +367,8 @@ not by itself let a recorder inject frames.
 been overtaken is worthless, so the simpler rule is also the better one.
 * **No key derivation from user input.** The link carries 256 bits of OS entropy or
 nothing.
-* **No plaintext fallback in the phone path.** A client that cannot pair must report
-that, not degrade into M0.
+* **No silent downgrade for a paired phone.** A phone holding a pairing that cannot reach its PC
+retries and says so; it never falls back to sending unsealed audio to whatever host it finds.
 * **No forward secrecy.** The key is a long-lived shared secret, so a device that is
 compromised *and* was recording earlier traffic can decrypt it. Closing that would
 need a Diffie-Hellman exchange, which needs an authenticated channel to run over —

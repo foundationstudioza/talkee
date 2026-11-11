@@ -18,7 +18,7 @@ talkee-vmic = { workspace = true }
 talkee-discovery = { workspace = true }
 # The pairing key the app shares with `talkee host`: same machine, same store, same key.
 talkee-store = { workspace = true }
-# Drawing the pairing code on the page a phone scans. Same crate the CLI uses for its terminal
+# Drawing the pairing code in the window. Same crate the CLI uses for its terminal
 # code, so both front ends encode the identical string the same way.
 qrcode = { workspace = true }
 # Reading the bundled VB-CABLE package. Default features off on purpose: this only ever

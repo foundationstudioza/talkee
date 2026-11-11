@@ -1,4 +1,4 @@
-//! Talkee M0 command line.
+//! Talkee developer command line. Not shipped to users; the app is `talkee-desktop`.
 //!
 //! Five subcommands, which together are enough to measure real latency without
 //! writing a single line of UI:

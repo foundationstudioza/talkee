@@ -1,9 +1,12 @@
 # Measuring Talkee's latency
 
-M0 exists to answer one question honestly: **how long does audio take to get from
-a phone's microphone to a virtual microphone on the desktop?** Everything else in
-the roadmap depends on that number, and a GUI built on an unmeasured pipeline is
-how projects like this fail.
+How long audio takes from the phone's microphone to the virtual microphone, how to
+measure it, and how to read the receiver's health line.
+
+Most of the numbers below were measured while the pipeline was being built (the early
+"M0" stage, raw PCM, before Opus and the adaptive jitter buffer). They are kept because
+they explain why the code is shaped the way it is. In everyday use on Discord the delay
+is not noticeable, and the acoustic end-to-end figure (Method 1) has not been measured.
 
 ## The budget
 
@@ -12,13 +15,13 @@ Every stage, with where the number comes from.
 | Stage | Typical | Notes |
 |---|---|---|
 | Phone capture | 5–10 ms | Oboe at `LowLatency` + 2 bursts of 48 kHz |
-| Encode | 1–2 ms | Opus, 10 ms frame. Zero in M0 (raw PCM) |
+| Encode | 1–2 ms | Opus, Android's own encoder |
 | Network | 2–15 ms | Wi-Fi LAN. USB/ADB is 1–2 ms |
-| Jitter buffer | 20–40 ms | The dial you actually tune |
-| Decode + PLC | ~1 ms | Zero in M0 |
-| Drift resampler | ~2 ms | Zero in M0 when rates already match |
+| Jitter buffer | 50–200 ms | Sized automatically from arrival jitter (`aim`) |
+| Decode + PLC | ~1 ms | libopus |
+| Drift resampler | ~2 ms | |
 | Output endpoint | 10–20 ms | WASAPI shared mode, plus the cable's own buffer |
-| **Total** | **~65 ms** | |
+| **Total** | **~100 ms** typical | Dominated by the jitter buffer |
 
 Two of those are not really under our control, so they are worth stating plainly:
 
@@ -27,8 +30,8 @@ Two of those are not really under our control, so they are worth stating plainly
   stream; it shows up as a fixed offset.
 * **WASAPI shared mode.** Microsoft's own documentation puts the audio engine at
   **1.3 ms** in Windows 10 and later, and the default buffer at **10 ms** unless
-  the app opts into smaller buffers via `IAudioClient3`. M0 uses cpal, so it takes
-  the default. M1 hand-writes the WASAPI path to claim the smaller buffer.
+  the app opts into smaller buffers via `IAudioClient3`. Talkee uses cpal, so it
+  takes the default; a few milliseconds were judged not worth a hand-written WASAPI path.
 
 ## Method 1 — true end-to-end (recommended)
 
@@ -79,7 +82,9 @@ Record `CABLE Output` in Audacity for the same 300 seconds. The clicks should be
 
 ## Reading the health line
 
-`talkee host` prints one line every few seconds:
+`talkee host` prints one line every few seconds, and the desktop app writes the same line
+to its log. The examples below are from before the `aim`, `cb`, `gap` and `echo` columns
+existed:
 
 ```
 recv       0 dgram |     -- dgram/s |      -- frames/s |   -- frames/dgram | loss   0.00% (0) | late     0 | slip      0 | trim      0 | under     0 | busy    0 | queue    0.0 ms | ctrl       -- ppm | drift       -- ppm
@@ -98,7 +103,11 @@ recv    1708 dgram |  100.3 dgram/s |   48145 frames/s |  480 frames/dgram | los
 | `trim` | Samples the loop *chose* to shed, to bring a burst back to the target depth | Steady growth means the mismatch is past the ±1% the loop can absorb |
 | `under` | Callbacks that ran short and padded with silence | Anything above a handful **while audio is flowing** |
 | `busy` | Callbacks that could not take the queue lock and emitted silence | Should be 0; nonzero means lock contention on the audio thread |
-| `queue` | Current output buffer depth | Should hold near `--buffer-ms`, not climb |
+| `queue` | Current output buffer depth | Should hold near `aim`, not climb |
+| `aim` | The depth the receiver is aiming for, set by the jitter estimator (50–200 ms) | Pinned at 200 ms means a very uneven network |
+| `cb` | The most frames the audio device has asked for in one callback | Informational: the device's buffer size |
+| `gap` | Longest gap between two datagrams in the window | Far above the frame time means the phone or Wi-Fi stalled |
+| `echo` | Echo cancellation: how much of the PC's own sound was removed, in dB | `off` when the switch is off |
 | `gain` | How hard the automatic level stage is working, as a multiplier | Pinned at 32× means the sender is very quiet; `--` means the stage is off |
 | `ctrl` | What the loop is doing about `drift`: the ratio correction, in ppm | Pinned at ±10 000 ppm means it has run out of authority |
 | `drift` | `frames/s` versus the rate the sender claims, in ppm | A sustained departure from zero while the three rate columns look healthy |

@@ -305,12 +305,9 @@ impl Receiver {
     ) -> Result<Self> {
         let socket = UdpSocket::bind(config.listen)
             .with_context(|| format!("binding UDP {}", config.listen))?;
-        // NOTE (M0): we would like to enlarge SO_RCVBUF here, because a 10 ms
-        // frame cadence leaves little slack for a scheduling stall. `std` cannot
-        // set socket options, and the Windows default (~64 KiB) is worth about
-        // 330 ms at raw-PCM rates — comfortably more than our queue depth — so we
-        // accept the default for now and revisit with `socket2` in M1, when Opus
-        // makes the numbers small enough that kernel drops would actually bite.
+        // SO_RCVBUF is left at the default. The Windows default (~64 KiB) holds about
+        // 330 ms of raw PCM and several seconds of Opus, far more than the queue
+        // depth, so a scheduling stall cannot overflow it before the queue would.
         socket
             .set_read_timeout(Some(RECV_TIMEOUT))
             .context("setting socket read timeout")?;

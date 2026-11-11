@@ -473,7 +473,7 @@ pub struct Engine {
     last_start_attempt: Instant,
     /// The pairing channel: one per process, not one per session.
     pairing: Option<PairingChannel>,
-    /// What the tray, the dashboard and the phone can change while this runs. One per process, so a
+    /// What the tray, the window and the phone can change while this runs. One per process, so a
     /// setting survives a session restart and every surface sees the same value.
     controls: LiveControls,
 }
@@ -541,7 +541,7 @@ impl Engine {
         }
     }
 
-    /// The live settings, to hand to the tray and the dashboard.
+    /// The live settings, to hand to the tray and the window.
     pub fn controls(&self) -> LiveControls {
         self.controls.clone()
     }

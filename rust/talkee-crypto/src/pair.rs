@@ -587,7 +587,7 @@ mod tests {
         assert!(PairLink::new("192.168.1.42", 47_800, "", psk()).is_err());
         assert!(PairLink::new("192.168.1.42", 47_800, "bad\nname", psk()).is_err());
         assert!(PairLink::new("192.168.1.42", 47_800, "bad\u{1b}[31m", psk()).is_err());
-        assert!(PairLink::new("192.168.1.42", 47_800, &"x".repeat(MAX_NAME_LEN + 1), psk()).is_err());
+        assert!(PairLink::new("192.168.1.42", 47_800, "x".repeat(MAX_NAME_LEN + 1), psk()).is_err());
         assert!(PairLink::new("has a space", 47_800, "DESKTOP", psk()).is_err());
         assert!(PairLink::new("::1", 47_800, "loopback", psk()).is_ok());
         assert!(PairLink::new("[fe80::1]", 47_800, "link-local", psk()).is_ok());

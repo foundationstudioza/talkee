@@ -5,15 +5,20 @@
 //! platform. That boundary is what lets us run this whole pipeline in CI
 //! against a PulseAudio null sink instead of a real virtual cable.
 //!
-//! # M0 data path
+//! # Data path
 //!
 //! ```text
 //! UDP socket (own thread, not real-time critical)
-//!   -> parse header            (talkee-proto)
-//!   -> decode to mono f32      (talkee-proto)
-//!   -> reorder / drop late     (stream::Receiver)
-//!   -> resample to device rate (resample::LinearResampler)
-//!   -> push into SharedQueue   (queue::SharedQueue)
+//!   -> parse and check header         (talkee-proto)
+//!   -> open the sealed payload        (talkee-crypto, via control::handle_pairing's session)
+//!   -> drop late / bill loss          (stream::Receiver)
+//!   -> decode Opus or PCM, conceal    (codec::OpusStream)
+//!   -> note arrival jitter            (jitter::JitterEstimator)
+//!   -> echo cancel + noise suppress   (echo::EchoCanceller)
+//!   -> automatic level                (level)
+//!   -> resample, ratio trimmed by     (resample::LinearResampler,
+//!      the depth controller            controller::DepthController)
+//!   -> push into SharedQueue          (queue::SharedQueue)
 //!
 //! audio callback (real-time critical)
 //!   -> try_lock SharedQueue, copy, pad with silence on underrun
