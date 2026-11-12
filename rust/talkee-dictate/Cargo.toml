@@ -1,0 +1,24 @@
+[package]
+name = "talkee-dictate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Dictation: recorded speech to clean text, through a cloud speech-to-text API and an optional cleanup model"
+
+# No platform code and no audio devices here: this crate takes samples and returns text, so it
+# builds and tests the same on Windows and on the Linux server. Capturing the microphone and typing
+# the result belong to the front ends.
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+base64 = { workspace = true }
+getrandom = { workspace = true }
+# Encoding the upload as Opus: about a tenth of WAV's size, which matters on a slow uplink. Same
+# crate and version as talkee-core's decoder. It builds libopus from C source, so cross-building
+# this crate for Linux needs a C toolchain for the target.
+opus = "0.4"
+# The same HTTP client, at the same version and features, as the desktop app's updater, so the
+# binary carries one copy of it and one TLS stack (rustls).
+ureq = { version = "2", default-features = false, features = ["tls"] }

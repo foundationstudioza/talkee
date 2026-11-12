@@ -149,6 +149,8 @@ struct App {
     /// A switch just clicked, shown as clicked until the app answers.
     touched: Option<(String, bool, Instant)>,
     show_code: Option<bool>,
+    /// The dictation card.
+    dictation: DictationPanel,
 }
 
 impl App {
@@ -205,6 +207,7 @@ impl App {
             qr: None,
             touched: None,
             show_code: None,
+            dictation: DictationPanel::load(),
         }
     }
 
@@ -305,6 +308,9 @@ impl eframe::App for App {
                                 }
                             }
                         });
+
+                    ui.add_space(20.0);
+                    dictation_card(ui, &mut self.dictation);
 
                     ui.add_space(14.0);
                     ui.horizontal(|ui| {
@@ -630,4 +636,225 @@ pub fn run(port: u16, token: String) -> Result<()> {
         Box::new(move |cc| Ok(Box::new(App::new(cc, port, token)))),
     )
     .map_err(|e| anyhow!("the window failed: {e}"))
+}
+
+/// The dictation card's state. It reads and writes the dictation files itself (this window runs as
+/// the same user); the app's dictation worker reads them again at the start of every dictation, so
+/// a change here applies to the next one.
+struct DictationPanel {
+    store: Option<talkee_store::Store>,
+    settings: talkee_dictate::Settings,
+    vocabulary: String,
+    vocabulary_saved: String,
+    groq: String,
+    openrouter: String,
+    /// Where each key currently comes from, for the labels.
+    groq_source: &'static str,
+    openrouter_source: &'static str,
+    /// Ready, or what is missing.
+    readiness: Result<(), String>,
+    message: Option<(String, Color32)>,
+}
+
+impl DictationPanel {
+    fn load() -> Self {
+        let store = talkee_store::Store::open().ok();
+        let dir = store.as_ref().map(|s| s.root().to_path_buf()).unwrap_or_default();
+        let vocabulary = talkee_dictate::config::load_vocabulary(&dir).join("\n");
+        let mut panel = DictationPanel {
+            settings: talkee_dictate::Settings::load(&dir),
+            vocabulary: vocabulary.clone(),
+            vocabulary_saved: vocabulary,
+            groq: String::new(),
+            openrouter: String::new(),
+            groq_source: "",
+            openrouter_source: "",
+            readiness: Ok(()),
+            message: None,
+            store,
+        };
+        panel.refresh();
+        panel
+    }
+
+    fn dir(&self) -> std::path::PathBuf {
+        self.store.as_ref().map(|s| s.root().to_path_buf()).unwrap_or_default()
+    }
+
+    /// Re-reads where the keys come from and whether dictation is ready.
+    fn refresh(&mut self) {
+        let Some(store) = self.store.as_ref() else {
+            self.readiness = Err("Talkee has nowhere to keep its settings on this PC".into());
+            return;
+        };
+        let mut saved = talkee_dictate::Keys::default();
+        if let Ok(Some(text)) = store.load_keys() {
+            saved.fill_from(&text);
+        }
+        let all = crate::dictation::load_keys(store);
+        let source = |saved: &Option<String>, all: &Option<String>| match (saved, all) {
+            (Some(_), _) => "saved",
+            (None, Some(_)) => "from a .env file",
+            (None, None) => "not set",
+        };
+        self.groq_source = source(&saved.groq, &all.groq);
+        self.openrouter_source = source(&saved.openrouter, &all.openrouter);
+        self.readiness = crate::dictation::readiness(&self.dir(), store);
+    }
+
+    fn save_settings(&mut self) {
+        match self.settings.save(&self.dir()) {
+            Ok(()) => self.refresh(),
+            Err(e) => self.message = Some((format!("Could not save: {e}"), RED)),
+        }
+    }
+
+    /// Saves the typed keys (encrypted), keeping any saved key that was left blank.
+    fn save_keys(&mut self) {
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        let mut keys = talkee_dictate::Keys {
+            groq: Some(self.groq.trim().to_string()).filter(|k| !k.is_empty()),
+            openrouter: Some(self.openrouter.trim().to_string()).filter(|k| !k.is_empty()),
+        };
+        if let Ok(Some(text)) = store.load_keys() {
+            let mut saved = talkee_dictate::Keys::default();
+            saved.fill_from(&text);
+            keys.fill_gaps(&saved);
+        }
+        let mut text = String::new();
+        if let Some(k) = &keys.groq {
+            text.push_str(&format!("{}={k}\n", talkee_dictate::keys::GROQ));
+        }
+        if let Some(k) = &keys.openrouter {
+            text.push_str(&format!("{}={k}\n", talkee_dictate::keys::OPENROUTER));
+        }
+        self.message = Some(match store.save_keys(&text) {
+            Ok(()) => ("Keys saved, encrypted for your Windows account.".into(), GREEN),
+            Err(e) => (format!("Could not save the keys: {e:#}"), RED),
+        });
+        self.groq.clear();
+        self.openrouter.clear();
+        self.refresh();
+    }
+
+    fn save_vocabulary(&mut self) {
+        let terms = talkee_dictate::config::parse_vocabulary(&self.vocabulary);
+        self.message = Some(match talkee_dictate::config::save_vocabulary(&self.dir(), &terms) {
+            Ok(()) => {
+                self.vocabulary = terms.join("\n");
+                self.vocabulary_saved = self.vocabulary.clone();
+                (format!("Vocabulary saved ({} words).", terms.len()), GREEN)
+            }
+            Err(e) => (format!("Could not save the vocabulary: {e}"), RED),
+        });
+    }
+}
+
+/// One API key row: a masked field and where the key currently comes from.
+fn key_row(ui: &mut egui::Ui, name: &str, value: &mut String, source: &str) {
+    ui.horizontal(|ui| {
+        ui.add_sized([96.0, 22.0], egui::Label::new(egui::RichText::new(name).size(13.0)));
+        ui.add(
+            egui::TextEdit::singleline(value)
+                .password(true)
+                .hint_text("paste a key to replace")
+                .desired_width(230.0),
+        );
+        let colour = if source == "not set" { AMBER } else { DIM };
+        ui.label(egui::RichText::new(source).color(colour).size(12.0));
+    });
+}
+
+/// The dictation card: on/off, cleanup, keys, and vocabulary.
+fn dictation_card(ui: &mut egui::Ui, panel: &mut DictationPanel) {
+    ui.label(egui::RichText::new("Dictation").size(16.0).strong());
+    ui.add_space(4.0);
+    ui.label(
+        egui::RichText::new(
+            "Press Ctrl+Win to start and again to stop, or hold it while you talk. The text is \
+             typed where your cursor is, on one line. Or hold the button in the phone app.",
+        )
+        .color(DIM)
+        .size(12.5),
+    );
+    ui.add_space(6.0);
+    match &panel.readiness {
+        Ok(()) if panel.settings.enabled => {
+            ui.label(egui::RichText::new("Ready").color(GREEN).size(12.5));
+        }
+        Ok(()) => {
+            ui.label(egui::RichText::new("Off").color(DIM).size(12.5));
+        }
+        Err(why) => {
+            ui.label(egui::RichText::new(why.as_str()).color(AMBER).size(12.5));
+        }
+    }
+    ui.add_space(10.0);
+
+    Frame::default()
+        .fill(PANEL)
+        .stroke(Stroke::new(1.0_f32, LINE))
+        .corner_radius(CornerRadius::same(14))
+        .show(ui, |ui| {
+            if switch_row(ui, "Dictation", "Ctrl+Win and the phone's button", panel.settings.enabled) {
+                panel.settings.enabled = !panel.settings.enabled;
+                panel.save_settings();
+            }
+            let y = ui.cursor().top();
+            ui.painter().hline(ui.min_rect().x_range(), y, Stroke::new(1.0_f32, LINE));
+            if switch_row(
+                ui,
+                "Clean up the text",
+                "Punctuation, lists, corrections, no filler words",
+                panel.settings.cleanup,
+            ) {
+                panel.settings.cleanup = !panel.settings.cleanup;
+                panel.save_settings();
+            }
+        });
+
+    ui.add_space(14.0);
+    ui.label(egui::RichText::new("API keys").size(13.5).strong());
+    ui.add_space(2.0);
+    ui.label(
+        egui::RichText::new("Groq does the transcription and the clean-up. OpenRouter is optional.")
+            .color(DIM)
+            .size(12.0),
+    );
+    ui.add_space(6.0);
+    let (groq_source, openrouter_source) = (panel.groq_source, panel.openrouter_source);
+    key_row(ui, "Groq", &mut panel.groq, groq_source);
+    key_row(ui, "OpenRouter", &mut panel.openrouter, openrouter_source);
+    ui.add_space(4.0);
+    let typed = !panel.groq.trim().is_empty() || !panel.openrouter.trim().is_empty();
+    if ui.add_enabled(typed, egui::Button::new("Save keys")).clicked() {
+        panel.save_keys();
+    }
+
+    ui.add_space(14.0);
+    ui.label(egui::RichText::new("Vocabulary").size(13.5).strong());
+    ui.add_space(2.0);
+    ui.label(
+        egui::RichText::new("Names and words Talkee should spell right, one per line.")
+            .color(DIM)
+            .size(12.0),
+    );
+    ui.add_space(6.0);
+    ui.add(
+        egui::TextEdit::multiline(&mut panel.vocabulary)
+            .desired_rows(5)
+            .desired_width(f32::INFINITY)
+            .hint_text("Compaq\nTalkee"),
+    );
+    ui.add_space(4.0);
+    let changed = panel.vocabulary != panel.vocabulary_saved;
+    if ui.add_enabled(changed, egui::Button::new("Save vocabulary")).clicked() {
+        panel.save_vocabulary();
+    }
+    if let Some((text, colour)) = &panel.message {
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new(text.as_str()).color(*colour).size(12.0));
+    }
 }

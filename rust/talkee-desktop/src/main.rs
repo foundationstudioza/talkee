@@ -29,11 +29,15 @@
 #![deny(unsafe_code)]
 
 mod args;
+mod dictation;
 mod engine;
 mod firewall;
+mod hotkey;
 mod icon;
 mod logging;
 mod message_pump;
+mod mic;
+mod overlay;
 #[cfg(windows)]
 #[cfg(windows)]
 mod setup;
@@ -44,6 +48,7 @@ mod single;
 mod state;
 #[cfg(windows)]
 mod tray;
+mod typing;
 #[cfg(windows)]
 mod window;
 mod ui;
@@ -234,6 +239,52 @@ fn snapshot_of(engine: &Engine, status: &engine::Status) -> wizard::Snapshot {
 }
 
 /// Runs the app until it is asked to stop.
+/// Dictation progress as the phone is told it.
+fn dictation_report(status: &dictation::Status, id: u32) -> talkee_core::live::DictateReport {
+    let (phase, text, error) = match &status.phase {
+        dictation::Phase::Idle => ("idle", None, None),
+        dictation::Phase::Recording(_) => ("recording", None, None),
+        dictation::Phase::Working => ("transcribing", None, None),
+        dictation::Phase::Done(_) => ("done", Some(status.last_text.clone()), None),
+        dictation::Phase::Failed(why) => ("failed", None, Some(why.clone())),
+    };
+    talkee_core::live::DictateReport {
+        id,
+        phase: phase.into(),
+        text,
+        error,
+    }
+}
+
+/// What the dictation pill shows for a status, if anything.
+fn overlay_for(status: &dictation::Status) -> Option<overlay::Shown> {
+    const RED: u32 = 0xE5484D;
+    const AMBER: u32 = 0xF5A524;
+    const BLUE: u32 = 0x3E8BFF;
+    let age = status.since.elapsed();
+    let shown = |text: &str, accent| {
+        Some(overlay::Shown {
+            text: text.to_string(),
+            accent,
+        })
+    };
+    match &status.phase {
+        dictation::Phase::Recording(dictation::Source::Computer) => {
+            shown("Listening\u{2026}  Ctrl+Win to finish", RED)
+        }
+        dictation::Phase::Recording(dictation::Source::Phone) => {
+            shown("Listening on your phone\u{2026}", RED)
+        }
+        dictation::Phase::Working => shown("Transcribing\u{2026}", AMBER),
+        // Typed or pasted: the text appearing is the confirmation. Anything else is worth reading.
+        dictation::Phase::Done(how) if how.starts_with("copied") && age < Duration::from_secs(5) => {
+            shown(&format!("Text {how}"), BLUE)
+        }
+        dictation::Phase::Failed(why) if age < Duration::from_secs(7) => shown(why, RED),
+        _ => None,
+    }
+}
+
 fn run(args: Args) -> Result<()> {
     let started = Instant::now();
     println!(
@@ -269,6 +320,37 @@ fn run(args: Args) -> Result<()> {
             None
         }
     };
+
+    // Dictation: Ctrl+Win (tap to start and again to stop, or hold) or the phone's button; the text
+    // is typed where the cursor is. The worker and the hook run on their own threads; this loop
+    // only forwards the hotkey and draws the indicator.
+    let phone_tap = dictation::PhoneTap::default();
+    engine.set_tap(phone_tap.receiver_tap());
+    let dictator = match talkee_store::Store::open() {
+        Ok(store) => Some(dictation::Dictator::start(
+            store.root().to_path_buf(),
+            store,
+            phone_tap.clone(),
+        )),
+        Err(e) => {
+            say(started, &format!("dictation: unavailable ({e:#})"));
+            None
+        }
+    };
+    let (hotkey_tx, hotkey_rx) = std::sync::mpsc::channel();
+    if dictator.is_some() {
+        if hotkey::start(hotkey_tx) {
+            say(started, "dictation: press Ctrl+Win to dictate (again to stop), or hold it while you talk");
+        } else {
+            say(started, "dictation: the Ctrl+Win hotkey could not be installed");
+        }
+    }
+    let mut overlay = overlay::Overlay::new();
+    // The phone's id for the dictation under way (0 when it started on the PC), and the status
+    // version last told to the phone.
+    let mut phone_dictation = 0u32;
+    let mut reported_dictation = 0u64;
+    let mut last_hotkey = Instant::now();
 
     // Zero configuration is the product requirement: the app listens whenever it can, so
     // there is nothing to press before a phone can connect. `--no-tray` and a menu Stop are
@@ -386,6 +468,49 @@ fn run(args: Args) -> Result<()> {
                     show_window(wizard.as_ref(), &mut window_child, started);
                 }
             }
+        }
+        if let Some(dictator) = dictator.as_ref() {
+            while let Ok(event) = hotkey_rx.try_recv() {
+                last_hotkey = Instant::now();
+                dictator.send(match event {
+                    hotkey::Event::Start => dictation::Command::Start(dictation::Source::Computer),
+                    hotkey::Event::Stop => dictation::Command::Stop,
+                    hotkey::Event::Cancel => dictation::Command::Cancel,
+                });
+            }
+            // The phone's hold-to-talk button arrives through the control connection.
+            for request in controls.take_dictation_requests() {
+                use talkee_core::live::DictateRequest;
+                match request {
+                    DictateRequest::Start(id) => {
+                        phone_dictation = id;
+                        dictator.send(dictation::Command::Start(dictation::Source::Phone));
+                    }
+                    DictateRequest::Stop(id) if id == phone_dictation => {
+                        dictator.send(dictation::Command::Stop)
+                    }
+                    DictateRequest::Cancel(id) if id == phone_dictation => {
+                        dictator.send(dictation::Command::Cancel)
+                    }
+                    _ => {}
+                }
+            }
+            let status = dictator.status();
+            // A dictation that ended some other way (the time limit, a microphone error, dictation
+            // turned off) must not leave the hotkey thinking a tap is still latched.
+            if !matches!(status.phase, dictation::Phase::Recording(dictation::Source::Computer))
+                && last_hotkey.elapsed() > Duration::from_secs(1)
+            {
+                hotkey::reset();
+            }
+            if status.version != reported_dictation {
+                reported_dictation = status.version;
+                if matches!(status.phase, dictation::Phase::Recording(dictation::Source::Computer)) {
+                    phone_dictation = 0;
+                }
+                controls.report_dictation(dictation_report(&status, phone_dictation));
+            }
+            overlay.set(overlay_for(&status));
         }
         if updater.quit_requested() {
             say(started, "an update is installing: stepping aside");
@@ -515,6 +640,23 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         };
         return match window::run(port, token) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("talkee-app: {e:#}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+
+    // `talkee-app --dictate-file <wav>`: one dictation from a file into the focused window, for testing
+    // everything after the hotkey. Runs beside an installed copy rather than handing over to it.
+    if argv.first().map(String::as_str) == Some("--dictate-file") {
+        let _ = logging::init(true);
+        let Some(path) = argv.get(1) else {
+            eprintln!("talkee-app: --dictate-file needs a WAV file");
+            return ExitCode::FAILURE;
+        };
+        return match dictation::dictate_file(std::path::Path::new(path)) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
                 eprintln!("talkee-app: {e:#}");

@@ -2820,9 +2820,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "cpal",
  "qrcode",
  "rqrr",
  "talkee-core",
+ "talkee-dictate",
  "talkee-discovery",
  "talkee-proto",
  "talkee-store",
@@ -2858,11 +2860,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base64",
+ "cpal",
  "eframe",
  "qrcode",
  "serde_json",
  "sha2",
  "talkee-core",
+ "talkee-dictate",
  "talkee-discovery",
  "talkee-proto",
  "talkee-store",
@@ -2871,6 +2875,19 @@ dependencies = [
  "ureq",
  "windows-sys 0.61.2",
  "zip",
+]
+
+[[package]]
+name = "talkee-dictate"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "getrandom 0.2.17",
+ "opus",
+ "serde",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]

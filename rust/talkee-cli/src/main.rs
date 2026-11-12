@@ -1,17 +1,21 @@
 //! Talkee developer command line. Not shipped to users; the app is `talkee-desktop`.
 //!
-//! Five subcommands, which together are enough to measure real latency without
-//! writing a single line of UI:
+//! The first five subcommands together are enough to measure real latency without writing a single
+//! line of UI; `dictate` and `keys` are for the dictation pipeline:
 //!
 //! * `probe`    — what audio endpoints exist, and is a virtual cable installed?
 //! * `cable`    — the same status, plus a way to install VB-CABLE with consent
 //! * `host`     — receive audio and play it into a virtual cable (the desktop side)
 //! * `send`     — synthesise audio and send it (stands in for the phone)
 //! * `discover` — look for hosts advertising themselves on this network
+//! * `dictate`  — record speech and print the transcript and the cleaned text
+//! * `keys`     — show the saved dictation keys, or import them from a `.env` file
 
 mod cable;
+mod dictate;
 mod discover;
 mod host;
+mod keys;
 mod probe;
 mod qr;
 mod send;
@@ -38,6 +42,10 @@ enum Command {
     Send(send::SendArgs),
     /// Look for Talkee hosts advertising themselves on this network.
     Discover(discover::DiscoverArgs),
+    /// Record speech (or read a WAV file) and print the transcript and the cleaned text.
+    Dictate(dictate::DictateArgs),
+    /// Show which dictation API keys are saved, or import them from a .env file.
+    Keys(keys::KeysArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -47,5 +55,7 @@ fn main() -> anyhow::Result<()> {
         Command::Host(args) => host::run(args),
         Command::Send(args) => send::run(args),
         Command::Discover(args) => discover::run(args),
+        Command::Dictate(args) => dictate::run(args),
+        Command::Keys(args) => keys::run(args),
     }
 }

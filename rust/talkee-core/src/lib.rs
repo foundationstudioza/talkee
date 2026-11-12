@@ -51,5 +51,5 @@ pub use local::{is_lan_reachable, local_ipv4_addresses, primary_ipv4};
 pub use meter::{ArrivalWindow, InputRate};
 pub use queue::{FillOutcome, SharedQueue};
 pub use stats::{Stats, StatsSnapshot};
-pub use stream::{Receiver, ReceiverConfig};
+pub use stream::{AudioTap, Receiver, ReceiverConfig};
 pub use traits::VirtualMicWriter;

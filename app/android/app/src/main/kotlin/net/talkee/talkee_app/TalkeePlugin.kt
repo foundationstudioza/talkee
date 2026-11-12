@@ -108,6 +108,12 @@ class TalkeePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventChanne
             }
             // The user tapped "install". The system asks again before anything changes.
             "installUpdate" -> result.success(Updater.install(context))
+            // The hold-to-talk button. The PC records, transcribes, and types; see TalkeeEngine.
+            "dictateStart" -> result.success(TalkeeEngine.dictateStart())
+            "dictateStop" -> {
+                TalkeeEngine.dictateStop(cancel = call.argument<Boolean>("cancel") == true)
+                result.success(null)
+            }
             // A switch the user turned on this screen. Sent to the PC, which is what decides.
             "set" -> {
                 val key = call.argument<String>("key")

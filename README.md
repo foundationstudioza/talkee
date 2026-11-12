@@ -56,6 +56,34 @@ the PC again by itself if its address changes.
 its SHA-256 and offers *Restart to update*. Android downloads the APK and shows an *Install* line;
 Android always asks you to confirm the install itself.
 
+## Dictation
+
+Speak, and clean text appears where your cursor is, in any app on the PC.
+
+* **From the PC:** press **Ctrl+Win** once to start and again to stop. Or hold Ctrl+Win while you
+  talk and let go when you are done. Pressing another key while holding it (Ctrl+Win+D, for example)
+  cancels, so Windows' own shortcuts still work.
+* **From the phone:** hold **Hold to dictate** and let go when you are done. The words appear on the
+  phone as you speak (Android 13 or later, using the phone's own recognizer: a preview only), and the
+  final text replaces them once the PC has typed it. People on a call do not hear a dictation, and it
+  works while muted.
+* **What happens:** the recording (silence trimmed, compressed with Opus) goes to Groq's
+  `whisper-large-v3-turbo`, then a fast text model rewrites it as finished writing: punctuation,
+  inline lists, numbers and email addresses written properly, filler words gone, spoken corrections
+  ("at 5, actually 6") applied. It never answers what you said. About a second after you finish.
+* **One line, always.** A line break would send a chat message early or run a terminal command, so
+  the text is typed as a single line. If the window you started in no longer has focus, or it runs as
+  administrator (Windows blocks typing into those), the text goes on the clipboard and the indicator
+  says so.
+* **Set up** in the Talkee window under *Dictation*: paste a Groq API key (stored encrypted with DPAPI
+  in `%APPDATA%\Talkee\keys.dat`), add names to the vocabulary, and turn the clean-up step on or off.
+  The settings are `%APPDATA%\Talkee\dictation.json` and `vocabulary.txt`. OpenRouter works too.
+* **Privacy:** the audio and the text go to Groq (or OpenRouter) and nowhere else. The log records
+  lengths and timings, never the words.
+
+`talkee dictate` tries the pipeline from a terminal, and `talkee keys --import` copies keys from a
+`.env` file into the encrypted store.
+
 ## How it works
 
 ```
@@ -90,9 +118,10 @@ Talkee/
 │  ├─ talkee-core/          # the receive pipeline: decode, jitter, drift, echo, level, queue. No platform code
 │  ├─ talkee-vmic/          # the platform boundary: plays into a virtual cable (cpal)
 │  ├─ talkee-discovery/     # mDNS advertise and browse
-│  ├─ talkee-store/         # the pairing key on disk, DPAPI-protected
-│  ├─ talkee-desktop/       # the app users run: tray, window, setup, updater  → talkee-app.exe
-│  └─ talkee-cli/           # developer tool: probe, cable, host, send, discover  → talkee.exe
+│  ├─ talkee-store/         # the pairing key and API keys on disk, DPAPI-protected
+│  ├─ talkee-dictate/       # dictation: speech to clean text via Groq/OpenRouter. No platform code
+│  ├─ talkee-desktop/       # the app users run: tray, window, setup, updater, dictation  → talkee-app.exe
+│  └─ talkee-cli/           # developer tool: probe, cable, host, send, discover, dictate, keys  → talkee.exe
 ├─ app/                     # the phone app: Flutter UI (lib/) over a Kotlin engine (android/)
 ├─ installer/talkee.iss     # Inno Setup script for Talkee-Setup.exe
 ├─ site/                    # the download page (GitHub Pages)
@@ -105,7 +134,7 @@ through the `VirtualMicWriter` trait, implemented in `talkee-vmic`.
 
 On the phone, the Flutter side is only the screens (scanner, microphone screen). Capture, Opus,
 pairing, crypto, discovery and updates are Kotlin in `app/android/app/src/main/kotlin/`, behind a
-plugin with four verbs: start, stop, status, pair.
+plugin whose main verbs are start, stop, status, pair, and dictateStart/dictateStop.
 
 ## Building
 

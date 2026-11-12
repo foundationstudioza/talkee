@@ -122,7 +122,10 @@ object Control {
          * [onState] is called on the watcher thread with the desktop's switches. The end of the
          * stream flips [lost].
          */
-        internal fun watch(onState: (paused: Boolean, noise: Boolean, echo: Boolean) -> Unit) {
+        internal fun watch(
+            onState: (paused: Boolean, noise: Boolean, echo: Boolean) -> Unit,
+            onDictate: (id: Int, phase: String, text: String?, error: String?) -> Unit = { _, _, _, _ -> },
+        ) {
             // Tells the PC this phone is still there, and gets an answer that proves the PC is. Without
             // this a phone that dies (or a PC that sleeps) is only noticed minutes later, by whichever
             // side next tries to say something. The PC echoes every ping, so silence for longer than
@@ -153,6 +156,15 @@ object Control {
                             // The PC's echo of a ping sent from here: the time since is the round trip.
                             val rtt = (nowMs() - message.optInt("ts")) and 0x7fffffff
                             if (rtt in 1..10_000) lastRttMs = rtt
+                        }
+                        if (message.optString("type") == "DICTATE_STATE") {
+                            // A desktop that sends this can dictate; the first one arrives on connect.
+                            onDictate(
+                                message.optInt("id", 0),
+                                message.optString("phase", "idle"),
+                                message.optString("text").takeIf { message.has("text") },
+                                message.optString("error").takeIf { message.has("error") },
+                            )
                         }
                         if (message.optString("type") == "STATE") {
                             onState(

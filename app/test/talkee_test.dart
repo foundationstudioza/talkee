@@ -21,6 +21,7 @@ void mockStatus({
   String state = 'discovering',
   bool paused = false,
   bool backgroundAllowed = true,
+  Map<String, Object?> extra = const {},
 }) {
   // The real plugin pushes every 250 ms, and the gate and the microphone screen share one broadcast
   // stream: the second listener only hears what is sent after it subscribes. So a test that needs
@@ -41,6 +42,7 @@ void mockStatus({
           'hasLink': hasLink,
           'backgroundAllowed': backgroundAllowed,
           'error': error,
+          ...extra,
         };
         sink.success(_current);
       },
@@ -251,6 +253,49 @@ void main() {
 
     expect(find.text('Muted'), findsOneWidget);
     expect(find.byIcon(Icons.mic_off_rounded), findsOneWidget);
+  });
+
+  testWidgets('a PC that cannot dictate gets no hold-to-talk button', (tester) async {
+    mockStatus(paired: true, hasLink: true, state: 'streaming');
+    await tester.pumpWidget(const TalkeeApp());
+    await tester.pump();
+    pushStatus();
+    await tester.pump();
+    expect(find.text('Hold to dictate'), findsNothing);
+  });
+
+  testWidgets('a PC that can dictate gets a hold-to-talk button', (tester) async {
+    mockStatus(
+      paired: true,
+      hasLink: true,
+      state: 'streaming',
+      extra: {'dictateSupported': true},
+    );
+    await tester.pumpWidget(const TalkeeApp());
+    await tester.pump();
+    pushStatus();
+    await tester.pump();
+    expect(find.text('Hold to dictate'), findsOneWidget);
+  });
+
+  testWidgets('dictated words take the place of the PC name', (tester) async {
+    mockStatus(
+      paired: true,
+      hasLink: true,
+      state: 'streaming',
+      extra: {
+        'dictateSupported': true,
+        'dictatePhase': 'done',
+        'dictateText': 'Meet at 6 at the office.',
+      },
+    );
+    await tester.pumpWidget(const TalkeeApp());
+    await tester.pump();
+    pushStatus();
+    await tester.pump();
+    expect(find.text('Meet at 6 at the office.'), findsOneWidget);
+    expect(find.text('Talkee on DESKTOP-ABC'), findsNothing);
+    expect(find.text('Typed on Talkee on DESKTOP-ABC'), findsOneWidget);
   });
 
   testWidgets('with no PC to ask, the switches do nothing', (tester) async {

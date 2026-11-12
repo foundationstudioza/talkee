@@ -268,6 +268,36 @@ which accepts any sealed frame whose sequence number is ahead of what it has see
 answer its own echo, or two peers will ping each other until one of them is closed —
 the reference implementation ignores a `PING` whose `ts` it has just echoed.
 
+### Dictation
+
+```json
+{"type":"DICTATE_STATE","id":0,"phase":"idle"}
+{"type":"DICTATE_START","id":7}
+{"type":"DICTATE_STOP","id":7}
+{"type":"DICTATE_CANCEL","id":7}
+{"type":"DICTATE_STATE","id":7,"phase":"done","text":"Meet at 6 at the office."}
+{"type":"DICTATE_STATE","id":7,"phase":"failed","error":"No speech was heard"}
+```
+
+The phone's hold-to-talk button. While a dictation records, the desktop collects the
+phone's processed audio (after echo cancellation and noise suppression) instead of
+playing it into the virtual cable, transcribes it, and types the text where its own
+cursor is.
+
+* The desktop sends `DICTATE_STATE` with phase `idle` as soon as the phone connects.
+  That is how a phone learns the desktop can dictate, and a phone sends `DICTATE_*`
+  only after receiving one, because an older desktop treats an unknown type as an error.
+  An older phone simply ignores `DICTATE_STATE`.
+* `id` is chosen by the phone and echoed back for its own dictations; `0` marks one
+  started on the desktop (its Ctrl+Win hotkey), which is reported too, so the phone can
+  show the words.
+* `phase` is `idle`, `recording`, `transcribing`, `done` (with `text`), or `failed`
+  (with `error`). `text` is shortened to 1,800 bytes, so the line stays under the 4,096
+  byte limit even when JSON escaping doubles it; the desktop typed all of it.
+* A dictation records even while muted: the mute keeps audio out of the call, and a
+  dictation never reaches the call either. The phone keeps streaming for 250 ms after
+  the button comes up before sending `DICTATE_STOP`, so the last word arrives.
+
 ## Pairing
 
 The desktop generates a 32-byte key from the OS random number generator and shows it

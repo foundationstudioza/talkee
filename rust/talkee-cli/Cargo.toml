@@ -16,6 +16,9 @@ talkee-core = { workspace = true }
 talkee-vmic = { workspace = true }
 talkee-discovery = { workspace = true }
 talkee-store = { workspace = true }
+talkee-dictate = { workspace = true }
+# Recording from the microphone for `talkee dictate`.
+cpal = { workspace = true }
 qrcode = { workspace = true }
 anyhow = { workspace = true }
 clap = { version = "4", features = ["derive"] }

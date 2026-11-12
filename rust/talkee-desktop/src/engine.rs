@@ -476,6 +476,8 @@ pub struct Engine {
     /// What the tray, the window and the phone can change while this runs. One per process, so a
     /// setting survives a session restart and every surface sees the same value.
     controls: LiveControls,
+    /// Sees the phone's processed audio, for dictation. Handed to every receiver this starts.
+    tap: Option<Arc<dyn talkee_core::AudioTap>>,
 }
 
 /// The pairing channel, and everything about it that outlives one audio session.
@@ -538,7 +540,13 @@ impl Engine {
             last_start_attempt: Instant::now() - START_RETRY,
             pairing: None,
             controls,
+            tap: None,
         }
+    }
+
+    /// Sets the tap every future session's receiver gets. See [`talkee_core::AudioTap`].
+    pub fn set_tap(&mut self, tap: Arc<dyn talkee_core::AudioTap>) {
+        self.tap = Some(tap);
     }
 
     /// The live settings, to hand to the tray and the window.
@@ -714,6 +722,9 @@ impl Engine {
         // Always built when there is a reference to build it from: whether it *runs* is a live
         // switch, and a switch that can only turn off what was on at startup is half a switch.
         receiver.set_controls(self.controls.clone());
+        if let Some(tap) = self.tap.as_ref() {
+            receiver.set_tap(Arc::clone(tap));
+        }
         let mut loopback = None;
         {
             let (canceller, feed) = talkee_core::echo::EchoCanceller::new(self.config.noise_suppression);

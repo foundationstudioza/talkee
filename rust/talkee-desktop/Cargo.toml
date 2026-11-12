@@ -18,6 +18,10 @@ talkee-vmic = { workspace = true }
 talkee-discovery = { workspace = true }
 # The pairing key the app shares with `talkee host`: same machine, same store, same key.
 talkee-store = { workspace = true }
+# Dictation: speech to clean text through Groq or OpenRouter.
+talkee-dictate = { workspace = true }
+# Recording from this computer's microphone for dictation.
+cpal = { workspace = true }
 # Drawing the pairing code in the window. Same crate the CLI uses for its terminal
 # code, so both front ends encode the identical string the same way.
 qrcode = { workspace = true }
@@ -52,4 +56,10 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_Threading",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
+    # Dictation: the hold-to-talk hook, typing and pasting the text, and the "listening" overlay.
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_System_LibraryLoader",
+    "Win32_Graphics_Gdi",
 ] }

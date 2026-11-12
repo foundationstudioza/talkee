@@ -244,6 +244,9 @@ fn handle_pairing(
         .context("setting the control poll interval")?;
     let mut echoed: Option<u32> = None;
     let mut told_version = 0u64;
+    // Zero is never a dictation version, so the first pass always sends one: that first
+    // DICTATE_STATE is how the phone learns this desktop can dictate.
+    let mut told_dictation = 0u64;
     let mut idle_since = std::time::Instant::now();
     let reconnects_at_start = controls.reconnect_requests();
     loop {
@@ -263,6 +266,18 @@ fn handle_pairing(
             }
             .write_to(&mut writer)
             .context("sending STATE")?;
+        }
+        let (dictation_version, report) = controls.dictation_report();
+        if dictation_version != told_dictation {
+            told_dictation = dictation_version;
+            ControlMsg::DictateState {
+                id: report.id,
+                phase: report.phase,
+                text: report.text.map(|t| talkee_proto::control::fit_dictate_text(&t)),
+                error: report.error.map(|e| talkee_proto::control::fit_dictate_text(&e)),
+            }
+            .write_to(&mut writer)
+            .context("sending DICTATE_STATE")?;
         }
 
         // A peer that closes its end — which is what every sender does when it finishes — surfaces
@@ -333,6 +348,15 @@ fn handle_pairing(
                 "talkee: phone: {frames_sent} frames sent, {frames_dropped} dropped, \
                  battery {battery_pct}%"
             ),
+            Ok(ControlMsg::DictateStart { id }) => {
+                controls.request_dictation(crate::live::DictateRequest::Start(id));
+            }
+            Ok(ControlMsg::DictateStop { id }) => {
+                controls.request_dictation(crate::live::DictateRequest::Stop(id));
+            }
+            Ok(ControlMsg::DictateCancel { id }) => {
+                controls.request_dictation(crate::live::DictateRequest::Cancel(id));
+            }
             Ok(ControlMsg::Stop) => {
                 controls.set(Setting::Paused, true);
             }

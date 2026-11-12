@@ -34,6 +34,12 @@ class TalkeeStatus {
     this.update,
     this.backgroundAllowed = true,
     this.error,
+    this.dictateSupported = false,
+    this.dictating = false,
+    this.dictatePhase = 'idle',
+    this.dictateText,
+    this.dictateError,
+    this.previewText,
   });
 
   factory TalkeeStatus.fromMap(Map<Object?, Object?> map) => TalkeeStatus(
@@ -51,6 +57,12 @@ class TalkeeStatus {
     update: map['update'] as String?,
     backgroundAllowed: (map['backgroundAllowed'] as bool?) ?? true,
     error: map['error'] as String?,
+    dictateSupported: (map['dictateSupported'] as bool?) ?? false,
+    dictating: (map['dictating'] as bool?) ?? false,
+    dictatePhase: (map['dictatePhase'] as String?) ?? 'idle',
+    dictateText: map['dictateText'] as String?,
+    dictateError: map['dictateError'] as String?,
+    previewText: map['previewText'] as String?,
   );
 
   /// One of `idle`, `discovering`, `streaming`, `error`.
@@ -87,6 +99,24 @@ class TalkeeStatus {
   /// The version of a downloaded update waiting to be installed, if there is one.
   final String? update;
   final String? error;
+
+  /// The PC can dictate: it has said so on this connection.
+  final bool dictateSupported;
+
+  /// The hold-to-talk button is held.
+  final bool dictating;
+
+  /// The PC's dictation phase: `idle`, `recording`, `transcribing`, `done`, or `failed`.
+  final String dictatePhase;
+
+  /// The text the PC typed, after `done`.
+  final String? dictateText;
+
+  /// Why the last dictation failed, after `failed`.
+  final String? dictateError;
+
+  /// What the phone's own recognizer heard so far: a preview, never what gets typed.
+  final String? previewText;
 
   bool get isStreaming => state == 'streaming';
 }
@@ -152,6 +182,9 @@ class _TalkeeHomeState extends State<TalkeeHome> with WidgetsBindingObserver {
   /// case where the answer never comes, so the switch snaps back rather than lying.
   final Map<String, bool> _pending = {};
   final Map<String, Timer> _pendingTimers = {};
+
+  /// The finger is on the dictation button.
+  bool _holding = false;
 
   @override
   void initState() {
@@ -246,6 +279,40 @@ class _TalkeeHomeState extends State<TalkeeHome> with WidgetsBindingObserver {
 
   Future<void> _start() => _invoke('start');
 
+  /// The dictation button went down (`true`) or came up (`false`).
+  void _dictate(bool down) {
+    if (down == _holding) return;
+    setState(() => _holding = down);
+    if (down) {
+      HapticFeedback.mediumImpact();
+      _invoke('dictateStart');
+    } else {
+      HapticFeedback.selectionClick();
+      _invoke('dictateStop');
+    }
+  }
+
+  /// The words to show where the PC's name usually is, or null for the name.
+  ///
+  /// While recording, what the phone's recognizer hears (grey: a preview). Once the PC has typed
+  /// it, the real text.
+  String? get _words {
+    if (!_status.isStreaming) return null;
+    switch (_status.dictatePhase) {
+      case 'recording':
+        return _status.previewText ?? 'Listening\u2026';
+      case 'transcribing':
+        return _status.previewText ?? 'Transcribing\u2026';
+      case 'done':
+        final text = _status.dictateText;
+        return (text == null || text.isEmpty) ? null : text;
+      default:
+        return null;
+    }
+  }
+
+  bool get _wordsAreFinal => _status.dictatePhase == 'done';
+
   /// Asks the PC to change a switch. Does nothing while there is no PC to ask.
   void _ask(String key, bool value) {
     if (!_status.isStreaming) return;
@@ -273,6 +340,16 @@ class _TalkeeHomeState extends State<TalkeeHome> with WidgetsBindingObserver {
         return '${_status.error}\nOpen Talkee on your computer to connect.\nTap the circle to try again.';
       }
       return 'Open Talkee on your computer to connect.\nTap the circle to try again.';
+    }
+    switch (_status.dictatePhase) {
+      case 'recording':
+        return 'Listening\u2026 let go when you are done';
+      case 'transcribing':
+        return 'Transcribing\u2026';
+      case 'done':
+        if (_words != null) return 'Typed on ${_status.host ?? 'your PC'}';
+      case 'failed':
+        if (_status.dictateError != null) return _status.dictateError!;
     }
     return _paused ? 'Muted' : 'Live';
   }
@@ -385,15 +462,35 @@ class _TalkeeHomeState extends State<TalkeeHome> with WidgetsBindingObserver {
                     ),
                   ),
                   const SizedBox(height: 40),
-                  Text(
-                    _headline,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      fontSize: 28,
-                      fontWeight: FontWeight.w300,
-                      letterSpacing: -0.5,
+                  if (_words == null)
+                    Text(
+                      _headline,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontSize: 28,
+                        fontWeight: FontWeight.w300,
+                        letterSpacing: -0.5,
+                      ),
+                    )
+                  else
+                    // The words being dictated, where the PC's name usually is. Scrolls, newest at the
+                    // bottom, so a long dictation keeps its latest words in view.
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 180),
+                      child: SingleChildScrollView(
+                        reverse: true,
+                        child: SelectableText(
+                          _words!,
+                          textAlign: TextAlign.center,
+                          style: TextStyle(
+                            fontSize: 20,
+                            height: 1.35,
+                            fontWeight: FontWeight.w400,
+                            color: _wordsAreFinal ? Colors.white : Colors.white54,
+                          ),
+                        ),
+                      ),
                     ),
-                  ),
                   const SizedBox(height: 10),
                   Text(
                     _detail,
@@ -407,6 +504,10 @@ class _TalkeeHomeState extends State<TalkeeHome> with WidgetsBindingObserver {
                     ),
                   ),
                   const Spacer(flex: 4),
+                  if (connected && _status.dictateSupported) ...[
+                    _HoldToTalk(holding: _holding, onChange: _dictate),
+                    const SizedBox(height: 28),
+                  ],
                   Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
@@ -429,6 +530,59 @@ class _TalkeeHomeState extends State<TalkeeHome> with WidgetsBindingObserver {
                   ),
                   const SizedBox(height: 36),
                 ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Hold to dictate: the PC records while the finger is down and types the text when it lifts.
+///
+/// A [Listener] rather than a gesture recognizer, because "down" has to start recording at once:
+/// a long-press recognizer would wait half a second and lose the first words.
+class _HoldToTalk extends StatelessWidget {
+  const _HoldToTalk({required this.holding, required this.onChange});
+
+  final bool holding;
+  final void Function(bool down) onChange;
+
+  @override
+  Widget build(BuildContext context) {
+    const red = Color(0xFFE5484D);
+    return Listener(
+      onPointerDown: (_) => onChange(true),
+      onPointerUp: (_) => onChange(false),
+      onPointerCancel: (_) => onChange(false),
+      behavior: HitTestBehavior.opaque,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 120),
+        width: double.infinity,
+        height: 64,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(32),
+          color: holding ? red.withValues(alpha: 0.22) : Colors.white.withValues(alpha: 0.06),
+          border: Border.all(
+            color: holding ? red : Colors.white24,
+            width: holding ? 2 : 1,
+          ),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.keyboard_voice_rounded,
+              color: holding ? red : Colors.white70,
+            ),
+            const SizedBox(width: 10),
+            Text(
+              holding ? 'Listening\u2026 let go to type it' : 'Hold to dictate',
+              style: TextStyle(
+                fontSize: 16,
+                color: holding ? Colors.white : Colors.white70,
               ),
             ),
           ],

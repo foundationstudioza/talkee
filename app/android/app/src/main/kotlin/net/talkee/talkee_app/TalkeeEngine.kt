@@ -59,6 +59,9 @@ object TalkeeEngine {
     private const val SAMPLE_RATE = 48_000
     private const val FRAME_MS = 10
     private const val FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS / 1000 // 480
+
+    /** How long the microphone keeps streaming after the dictation button is released. */
+    private const val DICTATE_TAIL_MS = 250L
     private const val BYTES_PER_SAMPLE = 4
 
     /**
@@ -93,6 +96,22 @@ object TalkeeEngine {
     @Volatile private var paused = false
     @Volatile private var noiseSuppression = true
     @Volatile private var echoCancel = true
+
+    // --- Dictation. The PC records the phone's stream while the button is held, transcribes it, and
+    // types it where its cursor is; these mirror what it reports, plus the live preview. ---
+    /** The PC can dictate: it has sent a DICTATE_STATE on this connection. */
+    @Volatile private var dictateSupported = false
+    /** The phone's id for the dictation it is holding, or 0. */
+    @Volatile private var dictating = 0
+    /** Capture keeps running, even if muted, until this moment, so the last word reaches the PC. */
+    @Volatile private var dictateTailUntil = 0L
+    private var nextDictateId = 1
+    @Volatile private var dictatePhase = "idle"
+    @Volatile private var dictateText: String? = null
+    @Volatile private var dictateError: String? = null
+    /** What the on-phone recognizer heard so far. Looks only; never typed. */
+    @Volatile private var previewText: String? = null
+    @Volatile private var preview: DictationPreview? = null
 
     /** Sends control messages off the UI thread, in order. */
     private val sender = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
@@ -156,7 +175,94 @@ object TalkeeEngine {
         "noiseSuppression" to noiseSuppression,
         "echoCancel" to echoCancel,
         "error" to lastError,
+        "dictateSupported" to (dictateSupported && pairing != null),
+        "dictating" to (dictating != 0),
+        "dictatePhase" to dictatePhase,
+        "dictateText" to dictateText,
+        "dictateError" to dictateError,
+        "previewText" to previewText,
+        "previewAvailable" to (appContext?.let { DictationPreview.supported(it) } ?: false),
     )
+
+    /** Whether the microphone must run for a dictation, whatever the mute says. */
+    private fun dictationNeedsAudio(): Boolean =
+        dictating != 0 || SystemClock.elapsedRealtime() < dictateTailUntil
+
+    /**
+     * The hold-to-talk button went down. Asks the PC to record this phone's stream, and starts the
+     * live preview. Returns false when the PC cannot dictate.
+     */
+    @Synchronized
+    fun dictateStart(): Boolean {
+        val connection = pairing?.connection ?: return false
+        if (!dictateSupported || dictating != 0) return false
+        val id = nextDictateId++
+        dictating = id
+        dictateTailUntil = 0L
+        previewText = null
+        dictateText = null
+        dictateError = null
+        dictatePhase = "recording"
+        sender.execute {
+            runCatching { connection.send(JSONObject().put("type", "DICTATE_START").put("id", id)) }
+                .onFailure { Log.w(TAG, "could not start a dictation: $it") }
+        }
+        appContext?.let { context ->
+            preview = DictationPreview(context) { text -> if (dictatePhase == "recording") previewText = text }
+                .also { it.start() }
+        }
+        return true
+    }
+
+    /**
+     * The button came up. Audio keeps flowing for a moment, because the last word is still on its way
+     * when the finger lifts, then the PC is told to transcribe. `cancel` throws the recording away.
+     */
+    @Synchronized
+    fun dictateStop(cancel: Boolean = false) {
+        val id = dictating
+        if (id == 0) return
+        val connection = pairing?.connection
+        dictating = 0
+        dictateTailUntil = SystemClock.elapsedRealtime() + DICTATE_TAIL_MS
+        preview?.stop()
+        preview = null
+        if (cancel) {
+            dictatePhase = "idle"
+            previewText = null
+        }
+        sender.execute {
+            if (!cancel) Thread.sleep(DICTATE_TAIL_MS)
+            val type = if (cancel) "DICTATE_CANCEL" else "DICTATE_STOP"
+            runCatching { connection?.send(JSONObject().put("type", type).put("id", id)) }
+                .onFailure { Log.w(TAG, "could not send $type: $it") }
+        }
+    }
+
+    /** A DICTATE_STATE from the PC. */
+    private fun onDictateState(id: Int, phase: String, text: String?, error: String?) {
+        dictateSupported = true
+        // While the button is held, the phone's own "recording" is the truth: a late state for an
+        // earlier dictation must not end this one on the screen.
+        if (dictating != 0 && id != dictating) return
+        when (phase) {
+            "recording" -> {
+                dictatePhase = phase
+                if (id == 0) previewText = null // started on the PC
+            }
+            "transcribing" -> dictatePhase = phase
+            "done" -> {
+                dictatePhase = phase
+                dictateText = text
+                dictateError = null
+            }
+            "failed" -> {
+                dictatePhase = phase
+                dictateError = error
+            }
+            else -> if (dictatePhase == "recording" && dictating == 0 && id == 0) dictatePhase = "idle"
+        }
+    }
 
     /** Whether this phone has a pairing link to stream to. */
     fun hasLink(): Boolean = link != null || appContext?.let { PairingStore.load(it) } != null
@@ -343,11 +449,15 @@ object TalkeeEngine {
 
         pairing?.connection?.close()
         pairing = paired
-        paired.connection.watch { p, n, e ->
-            paused = p
-            noiseSuppression = n
-            echoCancel = e
-        }
+        dictateSupported = false
+        paired.connection.watch(
+            onState = { p, n, e ->
+                paused = p
+                noiseSuppression = n
+                echoCancel = e
+            },
+            onDictate = ::onDictateState,
+        )
         this.link = link
         lastError = null
         hostLabel = link.name
@@ -528,15 +638,16 @@ object TalkeeEngine {
                     lastError = "the PC went away"
                     break
                 }
-                if (paused) {
+                if (paused && !dictationNeedsAudio()) {
                     // Muted from the PC or from here. The microphone is released, not merely
                     // ignored: the system's mic indicator goes out, which is the honest signal.
+                    // A dictation is the exception: the PC keeps what it records out of the call.
                     runCatching { recorder.stop() }
                     level = 0f
-                    while (paused && running.get() && pairing?.connection?.lost != true) {
+                    while (paused && !dictationNeedsAudio() && running.get() && pairing?.connection?.lost != true) {
                         Thread.sleep(60)
                     }
-                    if (running.get() && !paused) {
+                    if (running.get() && (!paused || dictationNeedsAudio())) {
                         runCatching { recorder.startRecording() }
                         // Audio the codec still held belongs to before the mute.
                         encoder?.reset()
@@ -560,6 +671,7 @@ object TalkeeEngine {
                     if (magnitude > peak) peak = magnitude
                 }
                 level = peak
+                preview?.feed(frame, read)
 
                 // One 10 ms frame becomes one raw datagram or, through the codec, nothing yet or a
                 // packet of 20 ms. Either way `seq` counts datagrams, which is what the PC's loss

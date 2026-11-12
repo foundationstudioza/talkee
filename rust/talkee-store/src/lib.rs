@@ -38,6 +38,12 @@ const PAIRING_FILE: &str = "pairing.dat";
 /// it would let anyone who sees the file tell whether this machine has ever paired.
 const MAGIC: &[u8; 8] = b"TALKEEPA";
 
+/// The file the dictation API keys live in.
+const KEYS_FILE: &str = "keys.dat";
+
+/// Format marker inside the keys blob.
+const KEYS_MAGIC: &[u8; 8] = b"TALKEEAK";
+
 /// The pairing this machine is using, and how it came to be that way.
 #[derive(Debug, Clone)]
 pub struct Pairing {
@@ -126,6 +132,45 @@ impl Store {
         Ok(())
     }
 
+    /// The file the API keys live in.
+    pub fn keys_path(&self) -> PathBuf {
+        self.root.join(KEYS_FILE)
+    }
+
+    /// The saved API keys, as `NAME=value` lines, if any have been saved.
+    ///
+    /// Encrypted the same way as the pairing key, for the same reason: whoever reads them spends
+    /// the user's money.
+    pub fn load_keys(&self) -> Result<Option<String>> {
+        let path = self.keys_path();
+        let blob = match std::fs::read(&path) {
+            Ok(blob) => blob,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        let plain =
+            dpapi::unprotect(&blob).with_context(|| format!("decrypting {}", path.display()))?;
+        let text = plain
+            .strip_prefix(KEYS_MAGIC.as_slice())
+            .ok_or_else(|| anyhow::anyhow!("{} is not a Talkee keys file", path.display()))?;
+        Ok(Some(
+            String::from_utf8(text.to_vec())
+                .with_context(|| format!("{} is not text", path.display()))?,
+        ))
+    }
+
+    /// Saves the API keys (`NAME=value` lines), replacing what was there.
+    pub fn save_keys(&self, text: &str) -> Result<()> {
+        std::fs::create_dir_all(&self.root)
+            .with_context(|| format!("creating {}", self.root.display()))?;
+        let mut plain = KEYS_MAGIC.to_vec();
+        plain.extend_from_slice(text.as_bytes());
+        let blob = dpapi::protect(&plain)?;
+        let path = self.keys_path();
+        std::fs::write(&path, &blob).with_context(|| format!("writing {}", path.display()))?;
+        Ok(())
+    }
+
     /// The key to use, making one if this machine has none.
     pub fn pairing(&self) -> Result<Pairing> {
         match self.load_pairing() {
@@ -198,6 +243,18 @@ mod tests {
             second.psk.as_bytes(),
             "the key changed across a restart, which would unpair every phone"
         );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn api_keys_round_trip_and_are_not_readable_in_the_file() {
+        let store = temp_store("api-keys");
+        assert!(store.load_keys().unwrap().is_none(), "nothing saved yet");
+        let text = "GROQ_API_KEY=gsk_example_not_real\n";
+        store.save_keys(text).expect("saves");
+        assert_eq!(store.load_keys().unwrap().as_deref(), Some(text));
+        let on_disk = std::fs::read(store.keys_path()).unwrap();
+        assert!(!on_disk.windows(7).any(|w| w == b"gsk_exa"), "the key is in the file in the clear");
     }
 
     #[test]

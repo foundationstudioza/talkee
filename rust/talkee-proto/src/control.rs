@@ -124,6 +124,55 @@ pub enum ControlMsg {
         /// Phone's battery percentage, or -1 if unknown.
         battery_pct: i32,
     },
+    /// The phone's hold-to-talk button went down: record a dictation from the phone's audio.
+    ///
+    /// Sent only to a desktop that has sent [`ControlMsg::DictateState`], which is how a phone
+    /// learns the desktop can dictate. An older desktop would treat an unknown line as an error.
+    DictateStart {
+        /// Chosen by the phone; echoed in the states for this dictation.
+        id: u32,
+    },
+    /// The button came up: transcribe and deliver.
+    DictateStop {
+        /// The dictation to stop.
+        id: u32,
+    },
+    /// Throw the recording away.
+    DictateCancel {
+        /// The dictation to cancel.
+        id: u32,
+    },
+    /// The desktop's dictation progress, for any dictation (the phone's or the PC hotkey's).
+    ///
+    /// Sent once when the phone connects (phase `idle`), and on every change after that.
+    DictateState {
+        /// The phone's id for its own dictations; 0 for one started on the PC.
+        id: u32,
+        /// `idle`, `recording`, `transcribing`, `done`, or `failed`.
+        phase: String,
+        /// The delivered text, with `done`. Shortened to fit a control line; the PC typed all of it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        text: Option<String>,
+        /// What went wrong, with `failed`, in words for the user.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+}
+
+/// Longest text a [`ControlMsg::DictateState`] carries, in bytes, leaving room for the rest of the
+/// line under [`MAX_CONTROL_LINE`] even when JSON escaping doubles it (line breaks, quotes).
+pub const MAX_DICTATE_TEXT: usize = 1_800;
+
+/// Shortens `text` to [`MAX_DICTATE_TEXT`] bytes at a character boundary, marking the cut.
+pub fn fit_dictate_text(text: &str) -> String {
+    if text.len() <= MAX_DICTATE_TEXT {
+        return text.to_string();
+    }
+    let mut end = MAX_DICTATE_TEXT - 3;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\u{2026}", &text[..end])
 }
 
 /// Longest control line we will read.
@@ -254,6 +303,37 @@ mod tests {
         };
         let json = serde_json::to_string(&msg).unwrap();
         assert_eq!(serde_json::from_str::<ControlMsg>(&json).unwrap(), msg);
+    }
+
+    #[test]
+    fn dictate_messages_use_the_wire_names_and_round_trip() {
+        let start = ControlMsg::DictateStart { id: 7 };
+        let json = serde_json::to_string(&start).unwrap();
+        assert_eq!(json, r#"{"type":"DICTATE_START","id":7}"#);
+        let state = ControlMsg::DictateState {
+            id: 0,
+            phase: "done".into(),
+            text: Some("Hello.".into()),
+            error: None,
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        assert_eq!(json, r#"{"type":"DICTATE_STATE","id":0,"phase":"done","text":"Hello."}"#);
+        assert_eq!(serde_json::from_str::<ControlMsg>(&json).unwrap(), state);
+    }
+
+    #[test]
+    fn a_long_dictation_still_fits_a_control_line() {
+        let text = "é".repeat(5_000);
+        let fitted = fit_dictate_text(&text);
+        assert!(fitted.len() <= MAX_DICTATE_TEXT);
+        let line = serde_json::to_string(&ControlMsg::DictateState {
+            id: 1,
+            phase: "done".into(),
+            text: Some(fitted),
+            error: None,
+        })
+        .unwrap();
+        assert!(line.len() < MAX_CONTROL_LINE, "{} bytes", line.len());
     }
 
     #[test]

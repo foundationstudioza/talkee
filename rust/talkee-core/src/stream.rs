@@ -144,6 +144,19 @@ impl SharedSession {
     }
 }
 
+/// Something that wants the phone's processed audio: dictation from the phone.
+///
+/// While [`AudioTap::collecting`] is true the receiver hands it every block (mono, after echo
+/// cancellation, noise suppression, and level, at the sender's rate) and sends the device silence
+/// instead, so people on a call do not hear the dictation. That holds even while muted: a mute
+/// silences the call, not a dictation the user asked for. Called on the receive thread; be quick.
+pub trait AudioTap: Send + Sync {
+    /// Whether a dictation is recording now.
+    fn collecting(&self) -> bool;
+    /// One processed block.
+    fn push(&self, samples: &[f32], rate: u32);
+}
+
 /// Receiver settings, resolved from the command line.
 #[derive(Debug, Clone, Copy)]
 pub struct ReceiverConfig {
@@ -262,6 +275,8 @@ pub struct Receiver {
     echo: Option<crate::echo::EchoCanceller>,
     /// Settings the tray, the dashboard and the phone can change while this runs.
     controls: Option<crate::live::LiveControls>,
+    /// Sees every processed block; see [`AudioTap`]. `None` when nothing listens.
+    tap: Option<std::sync::Arc<dyn AudioTap>>,
     /// The version of `controls` already applied, so a change is acted on once.
     controls_seen: u64,
     next_seq: Option<u32>,
@@ -327,6 +342,7 @@ impl Receiver {
             level: AutoLevel::new(),
             echo: None,
             controls: None,
+            tap: None,
             controls_seen: 0,
             next_seq: None,
             session: None,
@@ -349,6 +365,11 @@ impl Receiver {
     /// the PC is playing into it; this receiver runs the phone's audio through the canceller.
     pub fn set_echo_canceller(&mut self, echo: crate::echo::EchoCanceller) {
         self.echo = Some(echo);
+    }
+
+    /// Hands the receiver a tap that sees every processed block. See [`AudioTap`].
+    pub fn set_tap(&mut self, tap: std::sync::Arc<dyn AudioTap>) {
+        self.tap = Some(tap);
     }
 
     /// Hands the receiver the shared live settings. Without them it behaves as it was configured.
@@ -627,11 +648,14 @@ impl Receiver {
         );
 
         // Muted from the PC, the tray or the phone. The datagram has been authenticated and counted —
-        // the phone is still there — but nothing it carries reaches the cable.
-        if self
-            .controls
-            .as_ref()
-            .is_some_and(|c| c.get(crate::live::Setting::Paused))
+        // the phone is still there — but nothing it carries reaches the cable. A dictation still
+        // gets its audio: it never reaches the cable either (see `AudioTap`).
+        let dictating = self.tap.as_ref().is_some_and(|t| t.collecting());
+        if !dictating
+            && self
+                .controls
+                .as_ref()
+                .is_some_and(|c| c.get(crate::live::Setting::Paused))
         {
             self.stats.set_input_level(0.0);
             // What the decoder remembers is from before the mute, so it must not be used to guess at
@@ -703,6 +727,15 @@ impl Receiver {
         }
 
         self.stats.set_input_level(peak(&self.mono));
+
+        // Dictation from the phone: the tap takes the cleaned-up audio, and while it is collecting,
+        // the virtual microphone hears silence, so people on a call do not hear the dictation.
+        if dictating {
+            if let Some(tap) = self.tap.as_ref() {
+                tap.push(&self.mono, header.sample_rate);
+            }
+            self.mono.iter_mut().for_each(|s| *s = 0.0);
+        }
 
         if self.resampler.is_identity() {
             // Skip a pointless copy when the sender and device rates agree.

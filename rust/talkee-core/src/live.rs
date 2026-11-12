@@ -38,6 +38,48 @@ struct Inner {
     /// The phone's measured round trip to this PC in ms, or 0 when it has not reported one.
     rtt_ms: AtomicU32,
     phone: Mutex<Option<String>>,
+    /// The phone's hold-to-talk presses, waiting for the app's loop to hand them to dictation.
+    dictate_requests: Mutex<Vec<DictateRequest>>,
+    /// The latest dictation progress, for the control connection to tell the phone.
+    dictate_report: Mutex<DictateReport>,
+    /// Bumped when the report changes. Separate from `version`, which also means "save the
+    /// switches" and "send STATE": a dictation is neither.
+    dictate_version: AtomicU64,
+}
+
+/// A hold-to-talk press from the phone, by the phone's dictation id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DictateRequest {
+    /// The button went down.
+    Start(u32),
+    /// The button came up.
+    Stop(u32),
+    /// The dictation was abandoned.
+    Cancel(u32),
+}
+
+/// Dictation progress as the phone is told it. Mirrors the `DICTATE_STATE` message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DictateReport {
+    /// The phone's id, or 0 for a dictation started on the PC.
+    pub id: u32,
+    /// `idle`, `recording`, `transcribing`, `done`, or `failed`.
+    pub phase: String,
+    /// The delivered text, with `done`.
+    pub text: Option<String>,
+    /// Why it failed, with `failed`.
+    pub error: Option<String>,
+}
+
+impl Default for DictateReport {
+    fn default() -> Self {
+        DictateReport {
+            id: 0,
+            phase: "idle".into(),
+            text: None,
+            error: None,
+        }
+    }
 }
 
 /// A cheap-to-clone handle on the shared settings.
@@ -57,6 +99,9 @@ impl LiveControls {
             reconnects: AtomicU64::new(0),
             rtt_ms: AtomicU32::new(0),
             phone: Mutex::new(None),
+            dictate_requests: Mutex::new(Vec::new()),
+            dictate_report: Mutex::new(DictateReport::default()),
+            dictate_version: AtomicU64::new(1),
         }))
     }
 
@@ -137,11 +182,65 @@ impl LiveControls {
     pub fn phone(&self) -> Option<String> {
         self.0.phone.lock().ok().and_then(|p| p.clone())
     }
+
+    /// Queues a hold-to-talk press from the phone.
+    pub fn request_dictation(&self, request: DictateRequest) {
+        if let Ok(mut queue) = self.0.dictate_requests.lock() {
+            queue.push(request);
+        }
+    }
+
+    /// Takes the queued presses, oldest first.
+    pub fn take_dictation_requests(&self) -> Vec<DictateRequest> {
+        self.0
+            .dictate_requests
+            .lock()
+            .map(|mut queue| std::mem::take(&mut *queue))
+            .unwrap_or_default()
+    }
+
+    /// Records the dictation's progress. Bumps the dictation version only when it changed.
+    pub fn report_dictation(&self, report: DictateReport) {
+        if let Ok(mut held) = self.0.dictate_report.lock() {
+            if *held != report {
+                *held = report;
+                self.0.dictate_version.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// The latest progress and its version.
+    pub fn dictation_report(&self) -> (u64, DictateReport) {
+        let version = self.0.dictate_version.load(Ordering::Relaxed);
+        let report = self.0.dictate_report.lock().map(|r| r.clone()).unwrap_or_default();
+        (version, report)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dictation_requests_queue_and_reports_version_only_on_change() {
+        let controls = LiveControls::new(true, true, true);
+        controls.request_dictation(DictateRequest::Start(3));
+        controls.request_dictation(DictateRequest::Stop(3));
+        assert_eq!(
+            controls.take_dictation_requests(),
+            vec![DictateRequest::Start(3), DictateRequest::Stop(3)]
+        );
+        assert!(controls.take_dictation_requests().is_empty());
+
+        let settings_version = controls.version();
+        let (v0, _) = controls.dictation_report();
+        let report = DictateReport { id: 3, phase: "recording".into(), text: None, error: None };
+        controls.report_dictation(report.clone());
+        controls.report_dictation(report);
+        let (v1, now) = controls.dictation_report();
+        assert_eq!((v1, now.phase.as_str()), (v0 + 1, "recording"));
+        assert_eq!(controls.version(), settings_version, "a dictation is not a settings change");
+    }
 
     #[test]
     fn a_change_bumps_the_version_and_a_repeat_does_not() {
