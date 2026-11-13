@@ -298,6 +298,35 @@ void main() {
     expect(find.text('Typed on Talkee on DESKTOP-ABC'), findsOneWidget);
   });
 
+  testWidgets("the dictation settings show the PC's vocabulary and minutes", (tester) async {
+    mockStatus(
+      paired: true,
+      hasLink: true,
+      state: 'streaming',
+      extra: {
+        'dictateSupported': true,
+        'vocabulary': ['Compaq', 'Talkee'],
+        'usedSeconds': 125,
+        'limitSeconds': 3600,
+      },
+    );
+    const status = TalkeeStatus(
+      state: 'streaming',
+      dictateSupported: true,
+      vocabulary: ['Compaq', 'Talkee'],
+      usedSeconds: 125,
+      limitSeconds: 3600,
+    );
+    await tester.pumpWidget(
+      const MaterialApp(home: DictationSettingsScreen(initial: status)),
+    );
+    await tester.pump();
+    expect(find.text('Compaq'), findsOneWidget);
+    expect(find.text('Talkee'), findsOneWidget);
+    expect(find.text('3 of 60 minutes used today'), findsOneWidget);
+    expect(find.text('Clean up the text'), findsOneWidget);
+  });
+
   testWidgets('with no PC to ask, the switches do nothing', (tester) async {
     final calls = <MethodCall>[];
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger

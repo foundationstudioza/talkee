@@ -326,6 +326,7 @@ fn run(args: Args) -> Result<()> {
     // only forwards the hotkey and draws the indicator.
     let phone_tap = dictation::PhoneTap::default();
     engine.set_tap(phone_tap.receiver_tap());
+    let dictation_dir = talkee_store::Store::open().ok().map(|s| s.root().to_path_buf());
     let dictator = match talkee_store::Store::open() {
         Ok(store) => Some(dictation::Dictator::start(
             store.root().to_path_buf(),
@@ -351,6 +352,9 @@ fn run(args: Args) -> Result<()> {
     let mut phone_dictation = 0u32;
     let mut reported_dictation = 0u64;
     let mut last_hotkey = Instant::now();
+    // When the dictation settings were last published to the phone. They are re-read from the files
+    // every couple of seconds, so a change made in the window reaches the phone too.
+    let mut config_published = Instant::now() - Duration::from_secs(60);
 
     // Zero configuration is the product requirement: the app listens whenever it can, so
     // there is nothing to press before a phone can connect. `--no-tray` and a menu Stop are
@@ -511,6 +515,17 @@ fn run(args: Args) -> Result<()> {
                 controls.report_dictation(dictation_report(&status, phone_dictation));
             }
             overlay.set(overlay_for(&status));
+        }
+        if let Some(dir) = dictation_dir.as_deref() {
+            let changes = controls.take_dictation_configures();
+            for change in &changes {
+                say(started, "dictation: the phone changed the settings");
+                dictation::apply_configure(dir, change);
+            }
+            if !changes.is_empty() || config_published.elapsed() > Duration::from_secs(2) {
+                controls.report_dictation_config(dictation::current_config(dir));
+                config_published = Instant::now();
+            }
         }
         if updater.quit_requested() {
             say(started, "an update is installing: stepping aside");

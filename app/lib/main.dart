@@ -40,6 +40,11 @@ class TalkeeStatus {
     this.dictateText,
     this.dictateError,
     this.previewText,
+    this.dictateEnabled = true,
+    this.dictateCleanup = true,
+    this.vocabulary = const [],
+    this.usedSeconds = -1,
+    this.limitSeconds = -1,
   });
 
   factory TalkeeStatus.fromMap(Map<Object?, Object?> map) => TalkeeStatus(
@@ -63,6 +68,13 @@ class TalkeeStatus {
     dictateText: map['dictateText'] as String?,
     dictateError: map['dictateError'] as String?,
     previewText: map['previewText'] as String?,
+    dictateEnabled: (map['dictateEnabled'] as bool?) ?? true,
+    dictateCleanup: (map['dictateCleanup'] as bool?) ?? true,
+    vocabulary:
+        (map['vocabulary'] as List<Object?>?)?.whereType<String>().toList() ??
+        const [],
+    usedSeconds: (map['usedSeconds'] as num?)?.toInt() ?? -1,
+    limitSeconds: (map['limitSeconds'] as num?)?.toInt() ?? -1,
   );
 
   /// One of `idle`, `discovering`, `streaming`, `error`.
@@ -117,6 +129,15 @@ class TalkeeStatus {
 
   /// What the phone's own recognizer heard so far: a preview, never what gets typed.
   final String? previewText;
+
+  /// The PC's dictation settings. The PC owns them; the phone asks for changes.
+  final bool dictateEnabled;
+  final bool dictateCleanup;
+  final List<String> vocabulary;
+
+  /// Seconds of dictation used today and the daily allowance, or -1 when not known yet.
+  final int usedSeconds;
+  final int limitSeconds;
 
   bool get isStreaming => state == 'streaming';
 }
@@ -367,6 +388,26 @@ class _TalkeeHomeState extends State<TalkeeHome> with WidgetsBindingObserver {
       body: SafeArea(
         child: Stack(
           children: [
+            if (_status.isStreaming && _status.dictateSupported)
+              Align(
+                alignment: Alignment.topLeft,
+                child: GestureDetector(
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => DictationSettingsScreen(initial: _status),
+                    ),
+                  ),
+                  behavior: HitTestBehavior.opaque,
+                  child: const Padding(
+                    padding: EdgeInsets.all(16),
+                    child: Icon(
+                      Icons.tune_rounded,
+                      color: Colors.white30,
+                      size: 26,
+                    ),
+                  ),
+                ),
+              ),
             // Scan the code again: for a phone whose pairing no longer works — a new PC, a reset key —
             // where retrying can never succeed. Small and quiet, because most days it is never needed.
             Align(
@@ -532,6 +573,156 @@ class _TalkeeHomeState extends State<TalkeeHome> with WidgetsBindingObserver {
                 ],
               ),
             ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Dictation settings, kept on the PC: on/off, cleanup, today's minutes, and the vocabulary.
+///
+/// The PC owns them, as it owns the switches: a change here is a request, and the screen shows what
+/// the PC reports back, so the phone and the PC window never disagree.
+class DictationSettingsScreen extends StatefulWidget {
+  const DictationSettingsScreen({super.key, required this.initial});
+
+  final TalkeeStatus initial;
+
+  @override
+  State<DictationSettingsScreen> createState() => _DictationSettingsScreenState();
+}
+
+class _DictationSettingsScreenState extends State<DictationSettingsScreen> {
+  late TalkeeStatus _status = widget.initial;
+  StreamSubscription<dynamic>? _watch;
+  final TextEditingController _word = TextEditingController();
+  String? _note;
+
+  @override
+  void initState() {
+    super.initState();
+    _watch = _statusEvents.receiveBroadcastStream().listen((event) {
+      if (!mounted || event is! Map<Object?, Object?>) return;
+      setState(() => _status = TalkeeStatus.fromMap(event));
+    });
+  }
+
+  @override
+  void dispose() {
+    _watch?.cancel();
+    _word.dispose();
+    super.dispose();
+  }
+
+  Future<void> _configure(Map<String, Object?> change) async {
+    try {
+      final sent = await _methods.invokeMethod<bool>('dictateConfigure', change);
+      if (sent == false && mounted) {
+        setState(() => _note = 'Could not reach your PC, or the list is too long.');
+      } else if (mounted) {
+        setState(() => _note = null);
+      }
+    } on PlatformException {
+      // Reported through the status stream.
+    } on MissingPluginException {
+      // Tests.
+    }
+  }
+
+  void _addWord() {
+    final word = _word.text.trim();
+    if (word.isEmpty) return;
+    final exists = _status.vocabulary.any((w) => w.toLowerCase() == word.toLowerCase());
+    _word.clear();
+    if (!exists) _configure({'vocabulary': [..._status.vocabulary, word]});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final used = _status.usedSeconds;
+    final limit = _status.limitSeconds;
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Dictation'),
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+      ),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+          children: [
+            const Text(
+              'These settings live on your PC, so the phone and the Talkee window always agree.',
+              style: TextStyle(color: Colors.white54, fontSize: 13, height: 1.4),
+            ),
+            if (limit > 0) ...[
+              const SizedBox(height: 12),
+              Text(
+                '${(used / 60).ceil()} of ${limit ~/ 60} minutes used today',
+                style: const TextStyle(color: Colors.white70, fontSize: 14),
+              ),
+            ],
+            const SizedBox(height: 12),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Dictation'),
+              subtitle: const Text('Ctrl+Win on the PC and the button here'),
+              value: _status.dictateEnabled,
+              onChanged: (v) => _configure({'enabled': v}),
+            ),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              title: const Text('Clean up the text'),
+              subtitle: const Text('Punctuation, lists, corrections, no filler words'),
+              value: _status.dictateCleanup,
+              onChanged: (v) => _configure({'cleanup': v}),
+            ),
+            const SizedBox(height: 20),
+            const Text('Vocabulary', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w500)),
+            const SizedBox(height: 4),
+            const Text(
+              'Names and words Talkee should spell right.',
+              style: TextStyle(color: Colors.white54, fontSize: 13),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _word,
+                    textCapitalization: TextCapitalization.words,
+                    decoration: const InputDecoration(hintText: 'Add a word, like Compaq'),
+                    onSubmitted: (_) => _addWord(),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.add_rounded),
+                  tooltip: 'Add',
+                  onPressed: _addWord,
+                ),
+              ],
+            ),
+            if (_note != null) ...[
+              const SizedBox(height: 8),
+              Text(_note!, style: const TextStyle(color: Color(0xFFF87171), fontSize: 13)),
+            ],
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final word in _status.vocabulary)
+                  InputChip(
+                    label: Text(word),
+                    onDeleted: () => _configure({
+                      'vocabulary': _status.vocabulary.where((w) => w != word).toList(),
+                    }),
+                  ),
+              ],
+            ),
+            if (_status.vocabulary.isEmpty)
+              const Text('No words yet.', style: TextStyle(color: Colors.white38, fontSize: 13)),
           ],
         ),
       ),

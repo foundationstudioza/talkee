@@ -23,8 +23,9 @@ pub mod keys;
 pub mod ogg_opus;
 pub mod pipeline;
 pub mod provider;
+pub mod relay;
 
 pub use config::Settings;
 pub use keys::Keys;
-pub use pipeline::{Dictation, Outcome};
+pub use pipeline::{Backend, Dictation, Outcome};
 pub use provider::{AudioFormat, Client, Provider};

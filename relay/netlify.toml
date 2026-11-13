@@ -1,0 +1,7 @@
+# Talkee's dictation relay. Connect this repository in Netlify with "relay" as the base directory.
+[build]
+  publish = "public"
+  functions = "netlify/functions"
+
+[functions]
+  node_bundler = "esbuild"

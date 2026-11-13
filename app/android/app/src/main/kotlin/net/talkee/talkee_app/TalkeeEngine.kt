@@ -60,6 +60,9 @@ object TalkeeEngine {
     private const val FRAME_MS = 10
     private const val FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS / 1000 // 480
 
+    /** Longest DICTATE_CONFIGURE line sent; the PC reads at most 4096 bytes per line. */
+    private const val MAX_CONFIGURE_BYTES = 3_800
+
     /** How long the microphone keeps streaming after the dictation button is released. */
     private const val DICTATE_TAIL_MS = 250L
     private const val BYTES_PER_SAMPLE = 4
@@ -112,6 +115,14 @@ object TalkeeEngine {
     /** What the on-phone recognizer heard so far. Looks only; never typed. */
     @Volatile private var previewText: String? = null
     @Volatile private var preview: DictationPreview? = null
+
+    // --- The PC's dictation settings, for the phone's settings screen. The PC owns them: the phone
+    // asks for a change and shows what comes back, like the switches. ---
+    @Volatile private var dictateEnabled = true
+    @Volatile private var dictateCleanup = true
+    @Volatile private var vocabulary: List<String> = emptyList()
+    @Volatile private var usedSeconds = -1
+    @Volatile private var limitSeconds = -1
 
     /** Sends control messages off the UI thread, in order. */
     private val sender = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
@@ -182,7 +193,41 @@ object TalkeeEngine {
         "dictateError" to dictateError,
         "previewText" to previewText,
         "previewAvailable" to (appContext?.let { DictationPreview.supported(it) } ?: false),
+        "dictateEnabled" to dictateEnabled,
+        "dictateCleanup" to dictateCleanup,
+        "vocabulary" to vocabulary,
+        "usedSeconds" to usedSeconds,
+        "limitSeconds" to limitSeconds,
     )
+
+    /** A DICTATE_CONFIG from the PC. */
+    private fun onDictateConfig(message: JSONObject) {
+        dictateEnabled = message.optBoolean("enabled", true)
+        dictateCleanup = message.optBoolean("cleanup", true)
+        val list = message.optJSONArray("vocabulary")
+        vocabulary = if (list == null) emptyList() else (0 until list.length()).map { list.optString(it) }
+        usedSeconds = if (message.has("used_seconds")) message.optInt("used_seconds") else -1
+        limitSeconds = if (message.has("limit_seconds")) message.optInt("limit_seconds") else -1
+    }
+
+    /**
+     * Asks the PC to change its dictation settings. Fields left null are left alone; `vocabulary`
+     * replaces the whole list. Nothing changes here until the PC answers with a DICTATE_CONFIG.
+     */
+    fun dictateConfigure(enabled: Boolean?, cleanup: Boolean?, vocabulary: List<String>?): Boolean {
+        val connection = pairing?.connection ?: return false
+        if (!dictateSupported) return false
+        val message = JSONObject().put("type", "DICTATE_CONFIGURE")
+        if (enabled != null) message.put("enabled", enabled)
+        if (cleanup != null) message.put("cleanup", cleanup)
+        if (vocabulary != null) message.put("vocabulary", org.json.JSONArray(vocabulary))
+        // The PC refuses a control line over 4 KiB; a vocabulary that big is cut rather than lost.
+        if (message.toString().toByteArray().size > MAX_CONFIGURE_BYTES) return false
+        sender.execute {
+            runCatching { connection.send(message) }.onFailure { Log.w(TAG, "could not send settings: $it") }
+        }
+        return true
+    }
 
     /** Whether the microphone must run for a dictation, whatever the mute says. */
     private fun dictationNeedsAudio(): Boolean =
@@ -457,6 +502,7 @@ object TalkeeEngine {
                 echoCancel = e
             },
             onDictate = ::onDictateState,
+            onDictateConfig = ::onDictateConfig,
         )
         this.link = link
         lastError = null

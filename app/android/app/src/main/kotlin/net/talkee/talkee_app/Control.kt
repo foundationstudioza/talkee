@@ -125,6 +125,7 @@ object Control {
         internal fun watch(
             onState: (paused: Boolean, noise: Boolean, echo: Boolean) -> Unit,
             onDictate: (id: Int, phase: String, text: String?, error: String?) -> Unit = { _, _, _, _ -> },
+            onDictateConfig: (message: JSONObject) -> Unit = {},
         ) {
             // Tells the PC this phone is still there, and gets an answer that proves the PC is. Without
             // this a phone that dies (or a PC that sleeps) is only noticed minutes later, by whichever
@@ -166,6 +167,7 @@ object Control {
                                 message.optString("error").takeIf { message.has("error") },
                             )
                         }
+                        if (message.optString("type") == "DICTATE_CONFIG") onDictateConfig(message)
                         if (message.optString("type") == "STATE") {
                             onState(
                                 message.optBoolean("paused", false),

@@ -67,22 +67,31 @@ Speak, and clean text appears where your cursor is, in any app on the PC.
   phone as you speak (Android 13 or later, using the phone's own recognizer: a preview only), and the
   final text replaces them once the PC has typed it. People on a call do not hear a dictation, and it
   works while muted.
-* **What happens:** the recording (silence trimmed, compressed with Opus) goes to Groq's
-  `whisper-large-v3-turbo`, then a fast text model rewrites it as finished writing: punctuation,
-  inline lists, numbers and email addresses written properly, filler words gone, spoken corrections
-  ("at 5, actually 6") applied. It never answers what you said. About a second after you finish.
+* **What happens:** the recording (silence trimmed, compressed with Opus) goes to the Talkee relay,
+  which transcribes it with Groq's `whisper-large-v3-turbo` (OpenRouter if Groq is unavailable) and
+  has a fast text model rewrite it as finished writing: punctuation, inline lists, numbers and email
+  addresses written properly, filler words gone, spoken corrections ("at 5, actually 6") applied. It
+  never answers what you said. About a second after you finish.
+* **No API keys to bring.** The relay (`relay/`, on Netlify) holds Talkee's keys; the apps carry
+  none. Each install gets 60 minutes of dictation a day, counted against a random id made on first
+  use (`%APPDATA%\Talkee\device.id`).
 * **One line, always.** A line break would send a chat message early or run a terminal command, so
   the text is typed as a single line. If the window you started in no longer has focus, or it runs as
   administrator (Windows blocks typing into those), the text goes on the clipboard and the indicator
   says so.
-* **Set up** in the Talkee window under *Dictation*: paste a Groq API key (stored encrypted with DPAPI
-  in `%APPDATA%\Talkee\keys.dat`), add names to the vocabulary, and turn the clean-up step on or off.
-  The settings are `%APPDATA%\Talkee\dictation.json` and `vocabulary.txt`. OpenRouter works too.
-* **Privacy:** the audio and the text go to Groq (or OpenRouter) and nowhere else. The log records
-  lengths and timings, never the words.
+* **Settings** are in the Talkee window under *Dictation* and on the phone (the sliders icon): turn
+  dictation and the clean-up step on or off, see today's minutes, and add names to the vocabulary.
+  They live on the PC (`%APPDATA%\Talkee\dictation.json` and `vocabulary.txt`), so the two always
+  agree.
+* **Privacy:** the audio goes through the relay to Groq (or OpenRouter) and nowhere else; the relay
+  keeps only a per-device count of seconds per day. The log records lengths and timings, never the
+  words.
 
-`talkee dictate` tries the pipeline from a terminal, and `talkee keys --import` copies keys from a
-`.env` file into the encrypted store.
+For development, `talkee dictate` tries the pipeline from a terminal (`--relay-url
+http://localhost:8888` with `node relay/dev-server.mjs` for a local relay, or `--provider groq` to
+call Groq directly with keys from a `.env` file), and `talkee keys --import` copies those keys into
+the encrypted store (`keys.dat`, DPAPI) for the app's direct mode (`"provider": "groq"` in
+`dictation.json`).
 
 ## How it works
 
@@ -119,10 +128,11 @@ Talkee/
 │  ├─ talkee-vmic/          # the platform boundary: plays into a virtual cable (cpal)
 │  ├─ talkee-discovery/     # mDNS advertise and browse
 │  ├─ talkee-store/         # the pairing key and API keys on disk, DPAPI-protected
-│  ├─ talkee-dictate/       # dictation: speech to clean text via Groq/OpenRouter. No platform code
+│  ├─ talkee-dictate/       # dictation: speech to clean text through the relay (or Groq directly). No platform code
 │  ├─ talkee-desktop/       # the app users run: tray, window, setup, updater, dictation  → talkee-app.exe
 │  └─ talkee-cli/           # developer tool: probe, cable, host, send, discover, dictate, keys  → talkee.exe
 ├─ app/                     # the phone app: Flutter UI (lib/) over a Kotlin engine (android/)
+├─ relay/                   # the dictation relay on Netlify: holds the API keys, counts daily minutes
 ├─ installer/talkee.iss     # Inno Setup script for Talkee-Setup.exe
 ├─ site/                    # the download page (GitHub Pages)
 ├─ docs/                    # PROTOCOL.md, LATENCY.md

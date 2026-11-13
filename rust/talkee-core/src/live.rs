@@ -45,6 +45,36 @@ struct Inner {
     /// Bumped when the report changes. Separate from `version`, which also means "save the
     /// switches" and "send STATE": a dictation is neither.
     dictate_version: AtomicU64,
+    /// The dictation settings, once the app has published them; see [`DictateConfig`].
+    dictate_config: Mutex<Option<DictateConfig>>,
+    /// Bumped when the settings change, so the control connection tells the phone.
+    config_version: AtomicU64,
+    /// Changes the phone asked for, waiting for the app's loop to write them.
+    configure_requests: Mutex<Vec<DictateConfigure>>,
+}
+
+/// Dictation settings as the phone is shown them. Mirrors the `DICTATE_CONFIG` message.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DictateConfig {
+    /// Dictation answers the hotkey and the phone's button.
+    pub enabled: bool,
+    /// The text is cleaned up.
+    pub cleanup: bool,
+    /// Names and terms to spell right.
+    pub vocabulary: Vec<String>,
+    /// Seconds used today and the daily allowance, when known.
+    pub usage: Option<(u32, u32)>,
+}
+
+/// A change to the dictation settings the phone asked for. Mirrors `DICTATE_CONFIGURE`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DictateConfigure {
+    /// Turn dictation on or off.
+    pub enabled: Option<bool>,
+    /// Turn cleanup on or off.
+    pub cleanup: Option<bool>,
+    /// Replace the vocabulary.
+    pub vocabulary: Option<Vec<String>>,
 }
 
 /// A hold-to-talk press from the phone, by the phone's dictation id.
@@ -102,6 +132,9 @@ impl LiveControls {
             dictate_requests: Mutex::new(Vec::new()),
             dictate_report: Mutex::new(DictateReport::default()),
             dictate_version: AtomicU64::new(1),
+            dictate_config: Mutex::new(None),
+            config_version: AtomicU64::new(0),
+            configure_requests: Mutex::new(Vec::new()),
         }))
     }
 
@@ -209,6 +242,39 @@ impl LiveControls {
         }
     }
 
+    /// Publishes the dictation settings. Bumps their version only when they changed.
+    pub fn report_dictation_config(&self, config: DictateConfig) {
+        if let Ok(mut held) = self.0.dictate_config.lock() {
+            if held.as_ref() != Some(&config) {
+                *held = Some(config);
+                self.0.config_version.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// The dictation settings and their version; `None` until the app has published them.
+    pub fn dictation_config(&self) -> (u64, Option<DictateConfig>) {
+        let version = self.0.config_version.load(Ordering::Relaxed);
+        let config = self.0.dictate_config.lock().ok().and_then(|c| c.clone());
+        (version, config)
+    }
+
+    /// Queues a settings change from the phone.
+    pub fn request_dictation_configure(&self, change: DictateConfigure) {
+        if let Ok(mut queue) = self.0.configure_requests.lock() {
+            queue.push(change);
+        }
+    }
+
+    /// Takes the queued settings changes, oldest first.
+    pub fn take_dictation_configures(&self) -> Vec<DictateConfigure> {
+        self.0
+            .configure_requests
+            .lock()
+            .map(|mut queue| std::mem::take(&mut *queue))
+            .unwrap_or_default()
+    }
+
     /// The latest progress and its version.
     pub fn dictation_report(&self) -> (u64, DictateReport) {
         let version = self.0.dictate_version.load(Ordering::Relaxed);
@@ -240,6 +306,19 @@ mod tests {
         let (v1, now) = controls.dictation_report();
         assert_eq!((v1, now.phase.as_str()), (v0 + 1, "recording"));
         assert_eq!(controls.version(), settings_version, "a dictation is not a settings change");
+    }
+
+    #[test]
+    fn dictation_settings_publish_once_per_change() {
+        let controls = LiveControls::new(true, true, true);
+        assert_eq!(controls.dictation_config(), (0, None));
+        let config = DictateConfig { enabled: true, cleanup: true, vocabulary: vec!["Compaq".into()], usage: None };
+        controls.report_dictation_config(config.clone());
+        controls.report_dictation_config(config.clone());
+        assert_eq!(controls.dictation_config(), (1, Some(config)));
+        controls.request_dictation_configure(DictateConfigure { cleanup: Some(false), ..Default::default() });
+        assert_eq!(controls.take_dictation_configures().len(), 1);
+        assert!(controls.take_dictation_configures().is_empty());
     }
 
     #[test]

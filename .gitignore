@@ -36,3 +36,7 @@ release.pass
 /app/android/local.properties
 /app/.idea/
 /app/**/*.iml
+
+# Netlify CLI state and installed packages for the relay
+relay/.netlify/
+relay/node_modules/

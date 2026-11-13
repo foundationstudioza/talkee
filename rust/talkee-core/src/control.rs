@@ -247,6 +247,7 @@ fn handle_pairing(
     // Zero is never a dictation version, so the first pass always sends one: that first
     // DICTATE_STATE is how the phone learns this desktop can dictate.
     let mut told_dictation = 0u64;
+    let mut told_config = 0u64;
     let mut idle_since = std::time::Instant::now();
     let reconnects_at_start = controls.reconnect_requests();
     loop {
@@ -278,6 +279,20 @@ fn handle_pairing(
             }
             .write_to(&mut writer)
             .context("sending DICTATE_STATE")?;
+        }
+        if let (version, Some(config)) = controls.dictation_config() {
+            if version != told_config {
+                told_config = version;
+                ControlMsg::DictateConfig {
+                    enabled: config.enabled,
+                    cleanup: config.cleanup,
+                    vocabulary: talkee_proto::control::fit_vocabulary(&config.vocabulary),
+                    used_seconds: config.usage.map(|u| u.0),
+                    limit_seconds: config.usage.map(|u| u.1),
+                }
+                .write_to(&mut writer)
+                .context("sending DICTATE_CONFIG")?;
+            }
         }
 
         // A peer that closes its end — which is what every sender does when it finishes — surfaces
@@ -356,6 +371,17 @@ fn handle_pairing(
             }
             Ok(ControlMsg::DictateCancel { id }) => {
                 controls.request_dictation(crate::live::DictateRequest::Cancel(id));
+            }
+            Ok(ControlMsg::DictateConfigure {
+                enabled,
+                cleanup,
+                vocabulary,
+            }) => {
+                controls.request_dictation_configure(crate::live::DictateConfigure {
+                    enabled,
+                    cleanup,
+                    vocabulary,
+                });
             }
             Ok(ControlMsg::Stop) => {
                 controls.set(Setting::Paused, true);

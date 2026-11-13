@@ -294,6 +294,14 @@ cursor is.
 * `phase` is `idle`, `recording`, `transcribing`, `done` (with `text`), or `failed`
   (with `error`). `text` is shortened to 1,800 bytes, so the line stays under the 4,096
   byte limit even when JSON escaping doubles it; the desktop typed all of it.
+* `DICTATE_CONFIG` carries the desktop's dictation settings to the phone, with the first
+  `DICTATE_STATE` and whenever they change (on the phone, in the desktop window, or in the
+  files): `{"type":"DICTATE_CONFIG","enabled":true,"cleanup":true,"vocabulary":["Compaq"],
+  "used_seconds":125,"limit_seconds":3600}`. The vocabulary is cut to 2,500 bytes so the line
+  fits; the usage fields are absent until the relay has reported them.
+* `DICTATE_CONFIGURE` is the phone asking for a change; fields left out are left alone and
+  `vocabulary` replaces the whole list: `{"type":"DICTATE_CONFIGURE","cleanup":false}`. The
+  desktop owns the settings and answers with a new `DICTATE_CONFIG`.
 * A dictation records even while muted: the mute keeps audio out of the call, and a
   dictation never reaches the call either. The phone keeps streaming for 250 ms after
   the button comes up before sending `DICTATE_STOP`, so the last word arrives.

@@ -1,0 +1,15 @@
+{
+  "name": "talkee-relay",
+  "private": true,
+  "description": "Holds Talkee's dictation API keys so the apps never carry them",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@netlify/blobs": "^11.1.9"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -33,13 +33,15 @@ impl std::fmt::Debug for Keys {
 }
 
 impl Keys {
-    /// Loads keys from the environment, then fills gaps from the first `.env` found in `start` or
-    /// one of its parents. A variable already set in the environment wins over the file.
+    /// Loads keys from the first `.env` found in `start` or one of its parents, then fills gaps from
+    /// the process environment.
+    ///
+    /// The file wins. That is the opposite of the usual dotenv rule, on purpose: an old key left in
+    /// the Windows user environment (set once for another project, and inherited by every process
+    /// since) silently replaced the one written in this project's `.env`, and the only symptom was an
+    /// "expired key" error that pointed at the wrong file.
     pub fn load(start: &Path) -> (Self, Option<PathBuf>) {
-        let mut keys = Keys {
-            groq: non_empty(std::env::var(GROQ).ok()),
-            openrouter: non_empty(std::env::var(OPENROUTER).ok()),
-        };
+        let mut keys = Keys::default();
         let file = start
             .ancestors()
             .map(|dir| dir.join(".env"))
@@ -49,6 +51,10 @@ impl Keys {
                 keys.fill_from(&text);
             }
         }
+        keys.fill_gaps(&Keys {
+            groq: non_empty(std::env::var(GROQ).ok()),
+            openrouter: non_empty(std::env::var(OPENROUTER).ok()),
+        });
         (keys, file)
     }
 

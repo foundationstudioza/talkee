@@ -114,6 +114,14 @@ class TalkeePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventChanne
                 TalkeeEngine.dictateStop(cancel = call.argument<Boolean>("cancel") == true)
                 result.success(null)
             }
+            // The dictation settings screen. The PC owns the settings; this only asks.
+            "dictateConfigure" -> result.success(
+                TalkeeEngine.dictateConfigure(
+                    enabled = call.argument<Boolean>("enabled"),
+                    cleanup = call.argument<Boolean>("cleanup"),
+                    vocabulary = call.argument<List<String>>("vocabulary"),
+                ),
+            )
             // A switch the user turned on this screen. Sent to the PC, which is what decides.
             "set" -> {
                 val key = call.argument<String>("key")

@@ -157,6 +157,52 @@ pub enum ControlMsg {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
     },
+    /// The desktop's dictation settings, for the phone's settings screen. Sent with the first
+    /// `DICTATE_STATE` and whenever they change, from any side. The desktop owns them.
+    DictateConfig {
+        /// Dictation answers the hotkey and the phone's button.
+        enabled: bool,
+        /// The text is cleaned up.
+        cleanup: bool,
+        /// Names and terms to spell right (cut to fit a control line; see [`fit_vocabulary`]).
+        vocabulary: Vec<String>,
+        /// Seconds of dictation used today, when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        used_seconds: Option<u32>,
+        /// Seconds a device gets per day, when known.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit_seconds: Option<u32>,
+    },
+    /// The phone asks the desktop to change dictation settings. Fields left out are left alone;
+    /// `vocabulary` replaces the whole list.
+    DictateConfigure {
+        /// Turn dictation on or off.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        enabled: Option<bool>,
+        /// Turn cleanup on or off.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cleanup: Option<bool>,
+        /// The new vocabulary.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        vocabulary: Option<Vec<String>>,
+    },
+}
+
+/// Most bytes of vocabulary a [`ControlMsg::DictateConfig`] carries: with JSON quoting and the other
+/// fields, the line stays well under [`MAX_CONTROL_LINE`].
+pub const MAX_VOCABULARY_BYTES: usize = 2_500;
+
+/// The longest prefix of `terms` that fits [`MAX_VOCABULARY_BYTES`].
+pub fn fit_vocabulary(terms: &[String]) -> Vec<String> {
+    let mut total = 0;
+    terms
+        .iter()
+        .take_while(|term| {
+            total += term.len() + 4; // quotes, comma, and room for an escape
+            total <= MAX_VOCABULARY_BYTES
+        })
+        .cloned()
+        .collect()
 }
 
 /// Longest text a [`ControlMsg::DictateState`] carries, in bytes, leaving room for the rest of the
@@ -319,6 +365,33 @@ mod tests {
         let json = serde_json::to_string(&state).unwrap();
         assert_eq!(json, r#"{"type":"DICTATE_STATE","id":0,"phase":"done","text":"Hello."}"#);
         assert_eq!(serde_json::from_str::<ControlMsg>(&json).unwrap(), state);
+    }
+
+    #[test]
+    fn dictation_settings_round_trip_and_fit_a_line() {
+        let terms: Vec<String> = (0..300).map(|i| format!("Vocabulary term number {i}")).collect();
+        let config = ControlMsg::DictateConfig {
+            enabled: true,
+            cleanup: false,
+            vocabulary: fit_vocabulary(&terms),
+            used_seconds: Some(120),
+            limit_seconds: Some(3600),
+        };
+        let line = serde_json::to_string(&config).unwrap();
+        assert!(line.starts_with(r#"{"type":"DICTATE_CONFIG""#), "{line}");
+        assert!(line.len() < MAX_CONTROL_LINE, "{} bytes", line.len());
+        assert_eq!(serde_json::from_str::<ControlMsg>(&line).unwrap(), config);
+
+        let ask: ControlMsg =
+            serde_json::from_str(r#"{"type":"DICTATE_CONFIGURE","cleanup":false}"#).unwrap();
+        assert_eq!(
+            ask,
+            ControlMsg::DictateConfigure {
+                enabled: None,
+                cleanup: Some(false),
+                vocabulary: None
+            }
+        );
     }
 
     #[test]

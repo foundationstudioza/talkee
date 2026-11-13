@@ -11,7 +11,7 @@ use cpal::{FromSample, InputCallbackInfo, SampleFormat, SizedSample, StreamConfi
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use talkee_dictate::{audio, AudioFormat, Client, Dictation, Keys, Provider};
+use talkee_dictate::{audio, AudioFormat, Backend, Keys, Settings};
 
 /// The longest recording a dictation may be.
 const MAX_SECONDS: f32 = 300.0;
@@ -24,16 +24,20 @@ pub struct DictateArgs {
     /// Record for this many seconds instead of until Enter.
     #[arg(long)]
     seconds: Option<f32>,
-    /// Speech-to-text provider: groq or openrouter.
-    #[arg(long, default_value = "groq")]
+    /// Where the recording goes: relay (the Talkee relay, as installed apps use), or groq /
+    /// openrouter directly with keys from a .env file.
+    #[arg(long, default_value = "relay")]
     provider: String,
-    /// Speech-to-text model (default: the provider's Whisper Large V3 Turbo).
+    /// The relay's address (default: the public Talkee relay). A local one is `http://localhost:8888`.
+    #[arg(long)]
+    relay_url: Option<String>,
+    /// Speech-to-text model, direct only (default: Whisper Large V3 Turbo).
     #[arg(long)]
     model: Option<String>,
-    /// Cleanup provider (default: the speech-to-text provider).
+    /// Cleanup provider, direct only (default: the speech-to-text provider).
     #[arg(long)]
     cleanup_provider: Option<String>,
-    /// Cleanup model (default: the provider's default cleanup model).
+    /// Cleanup model, direct only (default: the provider's default cleanup model).
     #[arg(long)]
     cleanup_model: Option<String>,
     /// Print the raw transcript only.
@@ -59,63 +63,31 @@ pub struct DictateArgs {
 pub fn run(args: DictateArgs) -> Result<()> {
     let cwd = std::env::current_dir().context("reading the current directory")?;
     let (keys, env_file) = Keys::load(&cwd);
-    let client_for = |name: &str| -> Result<Client> {
-        let provider = Provider::parse(name)
-            .with_context(|| format!("unknown provider {name:?}; use groq or openrouter"))?;
-        let key = match provider {
-            Provider::Groq => keys.groq.clone(),
-            Provider::OpenRouter => keys.openrouter.clone(),
-        };
-        let Some(key) = key else {
-            let var = match provider {
-                Provider::Groq => talkee_dictate::keys::GROQ,
-                Provider::OpenRouter => talkee_dictate::keys::OPENROUTER,
-            };
-            let place = env_file
-                .as_ref()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "a .env file in this folder".into());
-            bail!("no {} key: set {var} in {place}", provider.name());
-        };
-        Ok(Client::new(provider, key))
+    let store = talkee_store::Store::open()?;
+    let settings = Settings {
+        provider: args.provider.clone(),
+        relay_url: args.relay_url.clone().unwrap_or_default(),
+        transcribe_model: args.model.clone().unwrap_or_default(),
+        cleanup: !args.no_cleanup,
+        cleanup_provider: args.cleanup_provider.clone().unwrap_or_default(),
+        cleanup_model: args.cleanup_model.clone().unwrap_or_default(),
+        instructions: args.instructions.clone().unwrap_or_default(),
+        language: args.language.clone().unwrap_or_default(),
+        ..Settings::default()
     };
-
-    let transcriber = client_for(&args.provider)?;
-    let cleanup = if args.no_cleanup {
-        None
-    } else {
-        let client = client_for(args.cleanup_provider.as_deref().unwrap_or(&args.provider))?;
-        let model = args
-            .cleanup_model
-            .clone()
-            .unwrap_or_else(|| client.provider().default_cleanup_model().to_string());
-        Some((client, model))
-    };
-    let dictation = Dictation {
-        transcribe_model: args.model.clone().unwrap_or_else(|| {
-            transcriber
-                .provider()
-                .default_transcribe_model()
-                .to_string()
-        }),
-        transcriber,
-        cleanup,
-        cleanup_instructions: args.instructions.clone(),
-        language: args.language.clone(),
-        // The saved vocabulary (the one the app's settings edit), plus any --word given here.
-        vocabulary: {
-            let mut terms = talkee_store::Store::open()
-                .map(|store| talkee_dictate::config::load_vocabulary(store.root()))
-                .unwrap_or_default();
-            terms.extend(args.vocabulary.iter().cloned());
-            terms
-        },
-        format: if args.wav {
-            AudioFormat::Wav
-        } else {
-            AudioFormat::OggOpus
-        },
-    };
+    // The saved vocabulary (the one the app's settings edit), plus any --word given here.
+    let mut vocabulary = talkee_dictate::config::load_vocabulary(store.root());
+    vocabulary.extend(args.vocabulary.iter().cloned());
+    let device = talkee_dictate::config::device_id(store.root());
+    let mut dictation = settings
+        .dictation(&keys, vocabulary, &device)
+        .map_err(|message| match &env_file {
+            Some(file) => anyhow::anyhow!("{message} ({} was read)", file.display()),
+            None => anyhow::anyhow!("{message}"),
+        })?;
+    if args.wav {
+        dictation.format = AudioFormat::Wav;
+    }
 
     let (samples, rate) = match &args.file {
         Some(path) => {
@@ -133,16 +105,25 @@ pub fn run(args: DictateArgs) -> Result<()> {
         eprintln!("saved the recording to {}", path.display());
     }
 
-    eprintln!(
-        "transcribing with {} ({}){}",
-        dictation.transcriber.provider().name(),
-        dictation.transcribe_model,
-        match &dictation.cleanup {
-            Some((client, model)) =>
-                format!(", cleaning up with {} ({model})", client.provider().name()),
-            None => String::new(),
-        }
-    );
+    match &dictation.backend {
+        Backend::Relay { .. } => eprintln!(
+            "sending to the relay at {}",
+            args.relay_url.as_deref().unwrap_or(talkee_dictate::relay::DEFAULT_URL)
+        ),
+        Backend::Direct {
+            transcriber,
+            transcribe_model,
+            cleanup,
+        } => eprintln!(
+            "transcribing with {} ({transcribe_model}){}",
+            transcriber.provider().name(),
+            match cleanup {
+                Some((client, model)) =>
+                    format!(", cleaning up with {} ({model})", client.provider().name()),
+                None => String::new(),
+            }
+        ),
+    }
     let outcome = dictation.run(&samples, rate)?;
     println!(
         "--- raw ({:.1} s audio, {} KB, {} ms) ---",
@@ -151,12 +132,15 @@ pub fn run(args: DictateArgs) -> Result<()> {
         outcome.transcribe_time.as_millis()
     );
     println!("{}", outcome.raw);
-    if dictation.cleanup.is_some() {
+    if !args.no_cleanup {
         println!("--- cleaned ({} ms) ---", outcome.cleanup_time.as_millis());
         println!("{}", outcome.text);
         if let Some(note) = &outcome.cleanup_note {
             eprintln!("note: {note}");
         }
+    }
+    if let Some((used, limit)) = outcome.usage {
+        eprintln!("today: {} of {} minutes used", used.div_ceil(60), limit / 60);
     }
     Ok(())
 }
