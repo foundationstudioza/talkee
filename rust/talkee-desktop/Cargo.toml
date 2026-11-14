@@ -20,6 +20,8 @@ talkee-discovery = { workspace = true }
 talkee-store = { workspace = true }
 # Dictation: speech to clean text through Groq or OpenRouter.
 talkee-dictate = { workspace = true }
+# The device mesh: paired servers, and the listener that lets them call this PC.
+talkee-mesh = { workspace = true }
 # Recording from this computer's microphone for dictation.
 cpal = { workspace = true }
 # Drawing the pairing code in the window. Same crate the CLI uses for its terminal
@@ -42,6 +44,7 @@ sha2 = { workspace = true }
 base64 = { workspace = true }
 
 [dev-dependencies]
+talkee-crypto = { workspace = true }
 
 # The tray icon and its popup menu. This is a Windows-only application, so the
 # Linux feature set (gtk / libappindicator / libxdo) is switched off rather than

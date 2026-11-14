@@ -109,6 +109,13 @@ talkee mesh peers
 talkee mesh call <name> system.status
 ```
 
+The Windows app has a **Devices** card in its window: it lists paired devices (with when each was last
+seen) and has a **Forget** button for each, a box to paste the link from `talkeed pair` and a **Pair**
+button, and **Pair a new device**, which copies an invite link to the clipboard for another device to
+join this PC. The app also listens on TCP 47810 so paired servers can call the PC (`dictation.status`
+tells them whether dictation is on and the minutes used today); its Windows Firewall rule is per
+program, so it covers that port too.
+
 Each pair of devices has its own key, and `talkeed forget <name>` (or `talkee mesh forget`) revokes
 one device without touching the others. The link is encrypted and both sides prove they hold the key
 (see `docs/PROTOCOL.md`, *Device mesh*). Running coding agents on these devices comes next.

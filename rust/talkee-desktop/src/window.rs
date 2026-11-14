@@ -151,6 +151,8 @@ struct App {
     show_code: Option<bool>,
     /// The dictation card.
     dictation: DictationPanel,
+    /// The devices card.
+    devices: DevicesPanel,
 }
 
 impl App {
@@ -208,6 +210,7 @@ impl App {
             touched: None,
             show_code: None,
             dictation: DictationPanel::load(),
+            devices: DevicesPanel::load(),
         }
     }
 
@@ -311,6 +314,9 @@ impl eframe::App for App {
 
                     ui.add_space(20.0);
                     dictation_card(ui, &mut self.dictation);
+
+                    ui.add_space(20.0);
+                    devices_card(ui, &mut self.devices);
 
                     ui.add_space(14.0);
                     ui.horizontal(|ui| {
@@ -636,6 +642,170 @@ pub fn run(port: u16, token: String) -> Result<()> {
         Box::new(move |cc| Ok(Box::new(App::new(cc, port, token)))),
     )
     .map_err(|e| anyhow!("the window failed: {e}"))
+}
+
+/// The devices card's state. Pairing dials the other device, which can take seconds, so it runs on
+/// a thread and the answer is picked up on a later frame. The pasted link holds a key: it is never
+/// logged or shown back (the field masks it), and it is emptied the moment it is used.
+struct DevicesPanel {
+    devices: Option<crate::mesh::Devices>,
+    rows: Vec<crate::mesh::PeerRow>,
+    read: Instant,
+    link: String,
+    /// The answer of a pairing under way: empty while it runs.
+    pairing: Option<PairingSlot>,
+    message: Option<(String, Color32)>,
+}
+
+type PairingSlot = Arc<Mutex<Option<Result<crate::mesh::PeerRow, String>>>>;
+
+impl DevicesPanel {
+    fn load() -> Self {
+        let devices = crate::mesh::Devices::open().ok();
+        let rows = devices.as_ref().map(|d| d.list()).unwrap_or_default();
+        DevicesPanel { devices, rows, read: Instant::now(), link: String::new(), pairing: None, message: None }
+    }
+
+    /// Picks up a finished pairing, and re-reads the list every few seconds: the app updates
+    /// "last seen" as devices call.
+    fn poll(&mut self) {
+        if let Some(slot) = &self.pairing {
+            let done = slot.lock().ok().and_then(|mut s| s.take());
+            if let Some(result) = done {
+                self.pairing = None;
+                self.message = Some(match result {
+                    Ok(row) => (format!("Paired with {}.", row.name), GREEN),
+                    Err(why) => (why, RED),
+                });
+                if let Some(d) = &self.devices {
+                    self.rows = d.list();
+                }
+            }
+        }
+        if self.read.elapsed() > Duration::from_secs(3) {
+            if let Some(d) = &self.devices {
+                self.rows = d.list();
+            }
+            self.read = Instant::now();
+        }
+    }
+
+    fn start_pairing(&mut self, ctx: &egui::Context) {
+        let Some(devices) = self.devices.clone() else { return };
+        let link = std::mem::take(&mut self.link);
+        let slot: PairingSlot = Arc::new(Mutex::new(None));
+        self.pairing = Some(Arc::clone(&slot));
+        self.message = None;
+        let ctx = ctx.clone();
+        thread::spawn(move || {
+            let result = devices.join(&link).map_err(|e| e.to_string());
+            if let Ok(mut s) = slot.lock() {
+                *s = Some(result);
+            }
+            ctx.request_repaint();
+        });
+    }
+}
+
+/// The devices card: paired devices, a box for a link from `talkeed pair`, and an invite.
+fn devices_card(ui: &mut egui::Ui, panel: &mut DevicesPanel) {
+    panel.poll();
+    if panel.pairing.is_some() {
+        ui.ctx().request_repaint_after(Duration::from_millis(200));
+    }
+    ui.label(egui::RichText::new("Devices").size(16.0).strong());
+    ui.add_space(4.0);
+    ui.label(
+        egui::RichText::new(
+            "Other computers paired with this PC, such as a Linux server running talkeed. \
+             Run talkeed pair on the server and paste the link it prints.",
+        )
+        .color(DIM)
+        .size(12.5),
+    );
+    ui.add_space(8.0);
+    if panel.devices.is_none() {
+        ui.label(egui::RichText::new("Talkee has nowhere to keep its settings on this PC.").color(AMBER).size(12.5));
+        return;
+    }
+
+    let mut forget = None;
+    Frame::default()
+        .fill(PANEL)
+        .stroke(Stroke::new(1.0_f32, LINE))
+        .corner_radius(CornerRadius::same(14))
+        .inner_margin(Margin::symmetric(14, 10))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            if panel.rows.is_empty() {
+                ui.label(egui::RichText::new("No paired devices yet.").color(DIM).size(12.5));
+            }
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            for row in &panel.rows {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(egui::RichText::new(format!("{}  \u{b7}  {}", row.name, row.kind)).size(13.5).strong());
+                        let addr = if row.addr.is_empty() { "dials this PC".to_string() } else { row.addr.clone() };
+                        ui.label(
+                            egui::RichText::new(format!("seen {}  \u{b7}  {addr}", crate::mesh::ago(now, row.last_seen)))
+                                .color(DIM)
+                                .size(12.0),
+                        );
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.button("Forget").clicked() {
+                            forget = Some(row.id.clone());
+                        }
+                    });
+                });
+                ui.add_space(4.0);
+            }
+        });
+    if let (Some(id), Some(d)) = (forget, panel.devices.as_ref()) {
+        panel.message = Some(match d.forget(&id) {
+            Ok(()) => ("Device forgotten. It can no longer connect.".to_string(), GREEN),
+            Err(e) => (e.to_string(), RED),
+        });
+        panel.rows = d.list();
+    }
+
+    ui.add_space(10.0);
+    ui.label(egui::RichText::new("Pair with a link").size(13.5).strong());
+    ui.add_space(4.0);
+    let busy = panel.pairing.is_some();
+    ui.add_enabled(
+        !busy,
+        egui::TextEdit::singleline(&mut panel.link)
+            .password(true)
+            .desired_width(f32::INFINITY)
+            .hint_text("Paste the talkee://pair link here"),
+    );
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        let ready = !busy && !panel.link.trim().is_empty();
+        if ui.add_enabled(ready, egui::Button::new(if busy { "Pairing..." } else { "Pair" })).clicked() {
+            let ctx = ui.ctx().clone();
+            panel.start_pairing(&ctx);
+        }
+        if ui.add_enabled(!busy, egui::Button::new("Pair a new device")).clicked() {
+            if let Some(d) = panel.devices.as_ref() {
+                panel.message = Some(match d.invite() {
+                    Ok(link) => {
+                        ui.ctx().copy_text(link);
+                        ("Link copied. Paste it on the other device within 15 minutes.".to_string(), GREEN)
+                    }
+                    Err(e) => (e.to_string(), RED),
+                });
+            }
+        }
+    });
+    if let Some((text, colour)) = &panel.message {
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new(text.as_str()).color(*colour).size(12.0));
+    }
 }
 
 /// The dictation card's state. It reads and writes the dictation files itself (this window runs as

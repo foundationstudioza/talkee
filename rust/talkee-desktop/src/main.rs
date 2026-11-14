@@ -36,6 +36,7 @@ mod hotkey;
 mod icon;
 mod logging;
 mod message_pump;
+mod mesh;
 mod mic;
 mod overlay;
 #[cfg(windows)]
@@ -338,6 +339,8 @@ fn run(args: Args) -> Result<()> {
             None
         }
     };
+    // Paired devices (a Linux server) can call this PC on TCP 47810. A busy port is logged, not fatal.
+    say(started, &mesh::start());
     let (hotkey_tx, hotkey_rx) = std::sync::mpsc::channel();
     if dictator.is_some() {
         if hotkey::start(hotkey_tx) {
