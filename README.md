@@ -113,6 +113,10 @@ Each pair of devices has its own key, and `talkeed forget <name>` (or `talkee me
 one device without touching the others. The link is encrypted and both sides prove they hold the key
 (see `docs/PROTOCOL.md`, *Device mesh*). Running coding agents on these devices comes next.
 
+The phone joins too: scan the `talkeed pair` link (the same scanner as the microphone code) and the
+server appears under the devices icon at the top left of the app, where **Status** asks it how it
+is and **Forget** deletes the phone's key for it. The keys sit in the Android Keystore.
+
 ## How it works
 
 ```

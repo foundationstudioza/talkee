@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 
+import 'devices.dart';
+
 /// Method channel exposed by `TalkeePlugin.kt`. Three verbs only: start, stop,
 /// status. Anything that would need a fourth belongs in the engine, not the UI.
 const MethodChannel _methods = MethodChannel('net.talkee/capture');
@@ -388,26 +390,47 @@ class _TalkeeHomeState extends State<TalkeeHome> with WidgetsBindingObserver {
       body: SafeArea(
         child: Stack(
           children: [
-            if (_status.isStreaming && _status.dictateSupported)
-              Align(
-                alignment: Alignment.topLeft,
-                child: GestureDetector(
-                  onTap: () => Navigator.of(context).push(
-                    MaterialPageRoute<void>(
-                      builder: (_) => DictationSettingsScreen(initial: _status),
+            Align(
+              alignment: Alignment.topLeft,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (_status.isStreaming && _status.dictateSupported)
+                    GestureDetector(
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => DictationSettingsScreen(initial: _status),
+                        ),
+                      ),
+                      behavior: HitTestBehavior.opaque,
+                      child: const Padding(
+                        padding: EdgeInsets.all(16),
+                        child: Icon(
+                          Icons.tune_rounded,
+                          color: Colors.white30,
+                          size: 26,
+                        ),
+                      ),
+                    ),
+                  // The other devices this phone has joined (a server, a second PC).
+                  GestureDetector(
+                    key: const Key('open-devices'),
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(builder: (_) => const DevicesScreen()),
+                    ),
+                    behavior: HitTestBehavior.opaque,
+                    child: const Padding(
+                      padding: EdgeInsets.all(16),
+                      child: Icon(
+                        Icons.devices_other_rounded,
+                        color: Colors.white30,
+                        size: 26,
+                      ),
                     ),
                   ),
-                  behavior: HitTestBehavior.opaque,
-                  child: const Padding(
-                    padding: EdgeInsets.all(16),
-                    child: Icon(
-                      Icons.tune_rounded,
-                      color: Colors.white30,
-                      size: 26,
-                    ),
-                  ),
-                ),
+                ],
               ),
+            ),
             // Scan the code again: for a phone whose pairing no longer works — a new PC, a reset key —
             // where retrying can never succeed. Small and quiet, because most days it is never needed.
             Align(
@@ -1007,7 +1030,21 @@ class _PairingScreenState extends State<PairingScreen> {
 
     setState(() => _handling = true);
     try {
-      await _methods.invokeMethod<void>('pair', {'link': link});
+      final kind = await _methods.invokeMethod<String>('pair', {'link': link});
+      if (kind == 'mesh') {
+        // An invite to the device mesh, not the microphone link: the phone joined that device, and
+        // the Devices list is the place that shows it.
+        if (!mounted) return;
+        final nav = Navigator.of(context);
+        final devices = MaterialPageRoute<void>(builder: (_) => const DevicesScreen());
+        if (nav.canPop()) {
+          nav.pushReplacement(devices);
+        } else {
+          setState(() => _handling = false);
+          nav.push(devices);
+        }
+        return;
+      }
       // Opened from the microphone screen, the scanner is a page on top of it: a good scan puts the
       // person back where they were. As the first-run screen there is nothing to go back to, and the
       // gate swaps the screen by itself.
