@@ -60,7 +60,7 @@ object Crypto {
     private val SESSION_LABEL = "talkee-session-v1".toByteArray(Charsets.US_ASCII)
 
     /** HMAC-SHA256 over the concatenation of `parts`. */
-    private fun hmacSha256(key: ByteArray, vararg parts: ByteArray): ByteArray {
+    internal fun hmacSha256(key: ByteArray, vararg parts: ByteArray): ByteArray {
         val mac = Mac.getInstance("HmacSHA256")
         mac.init(SecretKeySpec(key, "HmacSHA256"))
         for (part in parts) {

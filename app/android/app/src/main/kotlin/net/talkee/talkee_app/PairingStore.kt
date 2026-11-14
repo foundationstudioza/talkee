@@ -53,20 +53,31 @@ object PairingStore {
     private const val IV_BYTES = 12
 
     /** Stores the link, returning false when it could not be encrypted or written. */
-    fun save(context: Context, uri: String): Boolean {
+    fun save(context: Context, uri: String): Boolean = saveEntry(context, ENTRY, uri)
+
+    /** The stored link, or null when there is none usable. */
+    fun load(context: Context): String? = loadEntry(context, ENTRY)
+
+    /** Forgets the pairing, so the next launch scans again. */
+    fun clear(context: Context) = clearEntry(context, ENTRY)
+
+    /**
+     * Any named secret, under the same Keystore key. The device mesh keeps its peers (and their
+     * pair keys) this way, so there is one place that decides how a secret rests on this phone.
+     */
+    fun saveEntry(context: Context, entry: String, text: String): Boolean {
         val sealed = try {
-            encrypt(uri)
+            encrypt(text)
         } catch (_: Exception) {
             // Report rather than swallow: a save that quietly does nothing means the user re-scans
             // the code on every launch and never learns why.
             return false
         }
-        return prefs(context).edit().putString(ENTRY, sealed).commit()
+        return prefs(context).edit().putString(entry, sealed).commit()
     }
 
-    /** The stored link, or null when there is none usable. */
-    fun load(context: Context): String? {
-        val stored = prefs(context).getString(ENTRY, null) ?: return null
+    fun loadEntry(context: Context, entry: String): String? {
+        val stored = prefs(context).getString(entry, null) ?: return null
         return try {
             decrypt(stored)
         } catch (_: Exception) {
@@ -74,14 +85,13 @@ object PairingStore {
             // restore onto different hardware, an OS upgrade. The stored link then cannot be read,
             // and forgetting it is the only honest answer: the user pairs again instead of owning an
             // app that cannot explain itself.
-            clear(context)
+            clearEntry(context, entry)
             null
         }
     }
 
-    /** Forgets the pairing, so the next launch scans again. */
-    fun clear(context: Context) {
-        prefs(context).edit().remove(ENTRY).apply()
+    fun clearEntry(context: Context, entry: String) {
+        prefs(context).edit().remove(entry).apply()
     }
 
     private fun prefs(context: Context) =

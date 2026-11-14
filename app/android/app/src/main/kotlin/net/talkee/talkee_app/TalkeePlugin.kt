@@ -145,6 +145,12 @@ class TalkeePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventChanne
                     result.error("not-a-link", "that is not a Talkee pairing code", null)
                     return
                 }
+                // An invite to the device mesh (port 47810) is a different thing from the mic
+                // pairing link: it joins instead, and leaves the mic pairing alone.
+                if (parsed.controlPort == Mesh.PORT) {
+                    joinMesh(parsed, result)
+                    return
+                }
                 PairingStore.save(context, link!!)
                 // Paired off the main thread. `pairNow` does a TCP connect with a timeout, which is
                 // up to ten seconds of blocking — on the main thread that is a frozen camera and an
@@ -165,8 +171,64 @@ class TalkeePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventChanne
                     }
                 }, "talkee-pair-scan").start()
             }
+            // The Devices screen. Keys never cross this channel; peers are described without them.
+            "meshPeers" -> result.success(
+                MeshStore.peers(context).map { it.toPublicJson().toString() },
+            )
+            "meshForget" -> {
+                val id = call.argument<String>("id")
+                if (id == null) result.error("bad-args", "meshForget needs an id", null)
+                else result.success(MeshStore.forget(context, id))
+            }
+            // device.info / system.status and the like, answered as JSON text.
+            "meshCall" -> {
+                val id = call.argument<String>("id")
+                val op = call.argument<String>("op")
+                val peer = MeshStore.peers(context).firstOrNull { it.id == id }
+                if (peer == null || op == null) {
+                    result.error("unknown-device", "that device is not on this phone any more", null)
+                } else {
+                    background("talkee-mesh-call") {
+                        try {
+                            val text = MeshClient.call(peer, op)
+                            handler.post { result.success(text) }
+                        } catch (e: Exception) {
+                            handler.post { result.error("mesh-failed", meshProblem(e), null) }
+                        }
+                    }
+                }
+            }
             else -> result.notImplemented()
         }
+    }
+
+    private fun background(name: String, work: () -> Unit) {
+        Thread(work, name).start()
+    }
+
+    /** Joins the mesh an invite belongs to, off the main thread, and answers Dart with "mesh". */
+    private fun joinMesh(link: PairLink, result: MethodChannel.Result) {
+        background("talkee-mesh-join") {
+            try {
+                val peer = MeshClient.join(link, MeshStore.deviceId(context), MeshStore.deviceName())
+                if (!MeshStore.add(context, peer)) {
+                    handler.post { result.error("pairing-failed", "could not store the new device safely", null) }
+                } else {
+                    handler.post { result.success("mesh") }
+                }
+            } catch (e: Exception) {
+                handler.post { result.error("pairing-failed", meshProblem(e), null) }
+            }
+        }
+    }
+
+    /** A sentence for a failure; never the exception's own text for anything that might hold a key. */
+    private fun meshProblem(e: Exception): String = when (e) {
+        is Mesh.MeshException -> e.message ?: "the other device refused"
+        is java.net.SocketTimeoutException -> "no answer from the other device"
+        is java.net.ConnectException -> "nothing is listening there"
+        is java.net.UnknownHostException -> "could not find the other device"
+        else -> "could not reach the other device"
     }
 
     override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
