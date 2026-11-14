@@ -17,6 +17,8 @@ talkee-vmic = { workspace = true }
 talkee-discovery = { workspace = true }
 talkee-store = { workspace = true }
 talkee-dictate = { workspace = true }
+talkee-mesh = { workspace = true }
+serde_json = { workspace = true }
 # Recording from the microphone for `talkee dictate`.
 cpal = { workspace = true }
 qrcode = { workspace = true }

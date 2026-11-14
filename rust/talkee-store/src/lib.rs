@@ -71,12 +71,19 @@ impl Store {
     /// `%APPDATA%\Talkee` rather than beside the executable: the executable may sit somewhere the
     /// user cannot write, and this is per-user state.
     pub fn open() -> Result<Self> {
-        let base = std::env::var_os("APPDATA").map(PathBuf::from).ok_or_else(|| {
-            anyhow::anyhow!("no APPDATA directory, so there is nowhere to keep the pairing key")
+        #[cfg(windows)]
+        let root = std::env::var_os("APPDATA").map(|base| PathBuf::from(base).join("Talkee"));
+        // Linux: `$XDG_CONFIG_HOME/talkee`, else `~/.config/talkee`.
+        #[cfg(not(windows))]
+        let root = std::env::var_os("XDG_CONFIG_HOME")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
+            .map(|base| base.join("talkee"));
+        let root = root.ok_or_else(|| {
+            anyhow::anyhow!("no configuration directory, so there is nowhere to keep the pairing key")
         })?;
-        Ok(Self {
-            root: base.join("Talkee"),
-        })
+        Ok(Self { root })
     }
 
     /// A store rooted somewhere else. For tests, which must not touch the real one.
@@ -127,8 +134,7 @@ impl Store {
         plain.extend_from_slice(psk.as_bytes());
 
         let blob = dpapi::protect(&plain)?;
-        let path = self.pairing_path();
-        std::fs::write(&path, &blob).with_context(|| format!("writing {}", path.display()))?;
+        write_private(&self.pairing_path(), &blob)?;
         Ok(())
     }
 
@@ -166,9 +172,30 @@ impl Store {
         let mut plain = KEYS_MAGIC.to_vec();
         plain.extend_from_slice(text.as_bytes());
         let blob = dpapi::protect(&plain)?;
-        let path = self.keys_path();
-        std::fs::write(&path, &blob).with_context(|| format!("writing {}", path.display()))?;
+        write_private(&self.keys_path(), &blob)?;
         Ok(())
+    }
+
+    /// A named secret (`name` is a plain file name such as `mesh.dat`), if one is saved.
+    ///
+    /// Protected like the pairing key: DPAPI on Windows, a 0600 file on Linux.
+    pub fn load_secret(&self, name: &str) -> Result<Option<Vec<u8>>> {
+        let path = self.root.join(name);
+        let blob = match std::fs::read(&path) {
+            Ok(blob) => blob,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+        };
+        Ok(Some(
+            dpapi::unprotect(&blob).with_context(|| format!("decrypting {}", path.display()))?,
+        ))
+    }
+
+    /// Saves a named secret, replacing what was there.
+    pub fn save_secret(&self, name: &str, plain: &[u8]) -> Result<()> {
+        std::fs::create_dir_all(&self.root)
+            .with_context(|| format!("creating {}", self.root.display()))?;
+        write_private(&self.root.join(name), &dpapi::protect(plain)?)
     }
 
     /// The key to use, making one if this machine has none.
@@ -213,6 +240,58 @@ impl Store {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(e).with_context(|| format!("removing {}", path.display())),
+        }
+    }
+}
+
+/// Writes `bytes` so only this user can read them, through a temporary file so a power cut leaves
+/// the old file or the new one, never half of one.
+///
+/// On Unix the directory is made 0700 and the file 0600. On Windows the file inherits the profile's
+/// permissions, and the content is a DPAPI blob anyway.
+fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    let tmp = path.with_extension("tmp");
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+        let _ = std::fs::remove_file(&tmp);
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&tmp)
+            .with_context(|| format!("creating {}", tmp.display()))?;
+        file.write_all(bytes)
+            .and_then(|()| file.sync_all())
+            .with_context(|| format!("writing {}", tmp.display()))?;
+    }
+    #[cfg(not(unix))]
+    std::fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))
+}
+
+#[cfg(test)]
+mod private_tests {
+    use super::*;
+
+    #[test]
+    fn secrets_round_trip_and_replace() {
+        let root = std::env::temp_dir().join("talkee-store-test-secret");
+        let _ = std::fs::remove_dir_all(&root);
+        let store = Store::at(&root);
+        assert!(store.load_secret("x.dat").unwrap().is_none());
+        store.save_secret("x.dat", b"one").unwrap();
+        store.save_secret("x.dat", b"two").unwrap();
+        assert_eq!(store.load_secret("x.dat").unwrap().as_deref(), Some(&b"two"[..]));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(root.join("x.dat")).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "a secret must not be readable by others");
         }
     }
 }

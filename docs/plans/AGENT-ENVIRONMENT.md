@@ -236,7 +236,16 @@ or needs an answer.
   text typed at the cursor, always one line; the indicator pill; the Dictation card with encrypted
   keys and the vocabulary) and the phone (DICTATE_* messages, Hold to dictate, live preview from
   Android's recognizer on Android 13+, the final text in place of the PC's name).
-* **Next:** Phase 2, the device mesh with the Compaq.
+* **Done in v0.2.1:** the Netlify relay holds the keys (60 minutes a day per device); phone settings.
+* **Phase 2, first part (2026-11-14):** `talkee-mesh` (device identity, one key per pair, single-use
+  15-minute invites, mutual HMAC handshake, AES-GCM request/response frames with ids), `talkeed` on
+  Linux (`run`, `pair`, `peers`, `forget`, `rename`, `service`; `system.status`), the store on Linux
+  (0600 files under `~/.config/talkee`), and `talkee mesh join|peers|call|forget` on the PC. Running
+  on the Compaq as a user service; the PC paired with it, a round trip takes about 35 ms.
+* **Phase 2, still to do:** a Devices card in the PC window (pair by pasting a link, list, forget);
+  the phone joining the mesh (scan `talkeed pair`'s QR); mDNS for mesh peers so a changed address
+  is found again; the PC also listening, so servers can call it.
+* **Then:** Phase 3, the agent host, starting on the Compaq.
 
 ## 5. The Linux server (checked 2026-11-12)
 

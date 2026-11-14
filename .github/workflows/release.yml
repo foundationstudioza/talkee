@@ -42,6 +42,26 @@ jobs:
           name: windows
           path: installer/Output/Talkee-Setup-*.exe
 
+  linux:
+    # talkeed for servers. Ubuntu 22.04's glibc, so the binary runs on 22.04 and anything newer;
+    # baseline x86-64 (no target-cpu=native), so it runs on old CPUs without AVX2.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set the version from the tag
+        run: sed -i "s/^version = \".*\"/version = \"${GITHUB_REF_NAME#v}\"/" Cargo.toml
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test and build
+        run: |
+          cargo test --release -p talkee-crypto -p talkee-store -p talkee-mesh -p talkee-daemon
+          cargo build --release -p talkee-daemon
+          cp target/release/talkeed talkeed-linux-x86_64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: talkeed-linux-x86_64
+
   android:
     runs-on: ubuntu-latest
     steps:
@@ -93,7 +113,7 @@ jobs:
           path: Talkee-*.apk
 
   publish:
-    needs: [windows, android]
+    needs: [windows, android, linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -125,8 +145,8 @@ jobs:
             "android": { "url": "$BASE/$APK", "sha256": "$APK_SHA", "versionCode": $CODE }
           }
           EOF
-          sha256sum "$WIN" "$APK" > SHA256SUMS.txt
+          sha256sum "$WIN" "$APK" talkeed-linux-x86_64 > SHA256SUMS.txt
           gh release create "$GITHUB_REF_NAME" \
-            "$WIN" "$APK" Talkee-Setup.exe Talkee.apk update.json SHA256SUMS.txt \
+            "$WIN" "$APK" Talkee-Setup.exe Talkee.apk talkeed-linux-x86_64 update.json SHA256SUMS.txt \
             --title "Talkee $VERSION (beta)" \
             --notes "Beta build. Not code-signed, so Windows will ask you to confirm the install. Installed copies find this release by themselves."

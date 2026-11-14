@@ -8,6 +8,8 @@ members = [
     "rust/talkee-crypto",
     "rust/talkee-store",
     "rust/talkee-dictate",
+    "rust/talkee-mesh",
+    "rust/talkee-daemon",
     "rust/talkee-desktop",
     "rust/talkee-cli",
 ]
@@ -26,6 +28,7 @@ talkee-discovery = { path = "rust/talkee-discovery" }
 talkee-crypto = { path = "rust/talkee-crypto" }
 talkee-store = { path = "rust/talkee-store" }
 talkee-dictate = { path = "rust/talkee-dictate" }
+talkee-mesh = { path = "rust/talkee-mesh" }
 
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }

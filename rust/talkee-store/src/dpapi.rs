@@ -19,6 +19,7 @@
 //! `shell` modules.
 #![allow(unsafe_code)]
 
+#[allow(unused_imports)]
 use anyhow::{bail, Result};
 
 /// Encrypts `plain` so only this user on this machine can decrypt it.
@@ -101,14 +102,31 @@ pub fn unprotect(blob: &[u8]) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// There is no keystore here, and pretending otherwise would write a credential in the clear.
-#[cfg(not(windows))]
+/// Linux and other Unix systems: no DPAPI, so the protection is the file itself.
+///
+/// The blob is the plaintext, and the store writes it with mode 0600 inside a 0700 directory (see
+/// `write_private` in the crate root), so only this user can read it. That is weaker than DPAPI (a
+/// copy of the disk is readable) and it is what OpenSSH does with private keys; a headless server
+/// usually has no Secret Service to do better with.
+#[cfg(unix)]
+pub fn protect(plain: &[u8]) -> Result<Vec<u8>> {
+    Ok(plain.to_vec())
+}
+
+/// See [`protect`].
+#[cfg(unix)]
+pub fn unprotect(blob: &[u8]) -> Result<Vec<u8>> {
+    Ok(blob.to_vec())
+}
+
+/// Anywhere else there is no keystore, and pretending otherwise would write a credential in the clear.
+#[cfg(not(any(windows, unix)))]
 pub fn protect(_plain: &[u8]) -> Result<Vec<u8>> {
     bail!("this build has no platform keystore, and a pairing key is not written unencrypted")
 }
 
 /// See [`protect`].
-#[cfg(not(windows))]
+#[cfg(not(any(windows, unix)))]
 pub fn unprotect(_blob: &[u8]) -> Result<Vec<u8>> {
     bail!("this build has no platform keystore")
 }

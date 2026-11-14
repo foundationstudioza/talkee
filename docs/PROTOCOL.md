@@ -399,6 +399,49 @@ only ever comes from `talkee send`.
 A pairing link reaches the phone only through its own camera. Release builds ignore a link handed to
 the app by another app, because that would let it point the microphone at a PC of its choosing.
 
+## Device mesh (TCP 47810)
+
+Device to device, separate from the microphone link: a PC and a server running `talkeed` today,
+phones later. Implemented in `rust/talkee-mesh`.
+
+**One key per pair.** `talkeed pair` makes a fresh 32-byte key, keeps it as an *invite* (single use,
+15 minutes), and prints it in an ordinary `talkee://pair?...` link with `p=47810`. The first device
+to complete the handshake with it and send `pair.complete` becomes a peer; the invite is gone, and
+its key with it: the answer carries a **new** key for the pair, made then and sent only inside the
+encrypted link, so a link left in scrollback or a chat is worth nothing once used.
+Forgetting a peer deletes its key, so it is locked out at once and nothing else is.
+
+**Handshake**, JSON lines in the clear (nothing secret in them):
+
+```
+dialer   -> {"t":"MESH_HELLO","v":1,"fp":"<key fingerprint>","nonce":"<32 bytes, hex>"}
+listener -> {"t":"MESH_CHALLENGE","nonce":"<32 bytes, hex>","proof":"<hex>"}   or MESH_DENY
+dialer   -> {"t":"MESH_PROOF","proof":"<hex>"}
+```
+
+With `Nd`, `Nl` the dialer's and listener's nonces (raw bytes):
+
+* listener proof = HMAC-SHA256(key, `"talkee-mesh-listener-v1"` ‖ Nd ‖ Nl)
+* dialer proof = HMAC-SHA256(key, `"talkee-mesh-dialer-v1"` ‖ Nd ‖ Nl)
+* link key = HMAC-SHA256(key, `"talkee-mesh-link-v1"` ‖ Nd ‖ Nl)
+
+Both sides prove the key, under different labels, so a proof cannot be reflected. The link key is new
+for every connection. An unknown key and an expired invite get the same `MESH_DENY`.
+
+**Frames:** `[length u32 BE][seq u32 LE][nonce ‖ ciphertext ‖ tag]`, at most 1 MiB, AES-256-GCM under
+the link key with the audio path's nonce layout (direction bit 0 dialer→listener, 1 back), `seq` as
+associated data, starting at 0 and rising by one in each direction.
+
+**Messages:** a request `{"id":1,"op":"device.info","body":...}` gets
+`{"id":1,"ok":true,"body":...}` or `{"id":1,"ok":false,"error":"..."}`. A connection made with an
+invite may only send `pair.complete` (body: the dialer's device; answer:
+`{"device": <the listener's>, "key": "<new pair key, base64url>"}`). Every node
+answers `device.info`, `peers.list` (never keys) and `ping`; `talkeed` adds `system.status`.
+
+A device is `{"id":"<32 hex>","name":"...","kind":"pc"|"phone"|"server","caps":[...],
+"version":"...","os":"..."}`, with capabilities `mic`, `dictate`, `type-at-cursor`, `agents`,
+`files`. Keys are kept in `mesh.dat` (DPAPI on Windows; mode 0600 under `~/.config/talkee` on Linux).
+
 ## What is deliberately *not* here
 
 * **No session resumption without a handshake.** A pairing is a fresh challenge and

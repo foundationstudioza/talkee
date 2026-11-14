@@ -1,0 +1,19 @@
+[package]
+name = "talkee-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "talkeed: headless Talkee for Linux servers, answering paired devices over the mesh."
+
+[[bin]]
+name = "talkeed"
+path = "src/main.rs"
+
+[dependencies]
+talkee-mesh = { workspace = true }
+talkee-store = { workspace = true }
+anyhow = { workspace = true }
+serde_json = { workspace = true }
+qrcode = { workspace = true }
+clap = { version = "4", features = ["derive"] }

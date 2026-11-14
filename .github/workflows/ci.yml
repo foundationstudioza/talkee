@@ -17,6 +17,16 @@ jobs:
       - name: Test
         run: cargo test --workspace --release
 
+  linux:
+    # The headless node (talkeed) and the crates under it, on the OS they run on.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --release -p talkee-crypto -p talkee-store -p talkee-mesh -p talkee-daemon
+
   android:
     runs-on: ubuntu-latest
     steps:

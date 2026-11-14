@@ -16,6 +16,7 @@ mod dictate;
 mod discover;
 mod host;
 mod keys;
+mod mesh;
 mod probe;
 mod qr;
 mod send;
@@ -46,6 +47,8 @@ enum Command {
     Dictate(dictate::DictateArgs),
     /// Show which dictation API keys are saved, or import them from a .env file.
     Keys(keys::KeysArgs),
+    /// Pair with other devices (a server running talkeed) and send them requests.
+    Mesh(mesh::MeshArgs),
 }
 
 fn main() -> anyhow::Result<()> {
@@ -57,5 +60,6 @@ fn main() -> anyhow::Result<()> {
         Command::Discover(args) => discover::run(args),
         Command::Dictate(args) => dictate::run(args),
         Command::Keys(args) => keys::run(args),
+        Command::Mesh(args) => mesh::run(args),
     }
 }

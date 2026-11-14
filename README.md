@@ -93,6 +93,26 @@ call Groq directly with keys from a `.env` file), and `talkee keys --import` cop
 the encrypted store (`keys.dat`, DPAPI) for the app's direct mode (`"provider": "groq"` in
 `dictation.json`).
 
+## Devices (beta, command line for now)
+
+Talkee devices can pair with each other, not only phone to PC. The first one besides the phone is a
+Linux server running **`talkeed`**, headless Talkee (`talkeed-linux-x86_64` on the Releases page).
+
+```bash
+# on the server (over SSH)
+talkeed service          # installs and starts the systemd user service (port 47810)
+talkeed pair             # prints a one-time link, valid 15 minutes
+
+# on the PC
+talkee mesh join "talkee://pair?..."
+talkee mesh peers
+talkee mesh call <name> system.status
+```
+
+Each pair of devices has its own key, and `talkeed forget <name>` (or `talkee mesh forget`) revokes
+one device without touching the others. The link is encrypted and both sides prove they hold the key
+(see `docs/PROTOCOL.md`, *Device mesh*). Running coding agents on these devices comes next.
+
 ## How it works
 
 ```
@@ -129,8 +149,10 @@ Talkee/
 │  ├─ talkee-discovery/     # mDNS advertise and browse
 │  ├─ talkee-store/         # the pairing key and API keys on disk, DPAPI-protected
 │  ├─ talkee-dictate/       # dictation: speech to clean text through the relay (or Groq directly). No platform code
+│  ├─ talkee-mesh/          # device mesh: identity, paired peers, encrypted request/response link. No platform code
+│  ├─ talkee-daemon/        # talkeed: headless Talkee for Linux servers  → talkeed
 │  ├─ talkee-desktop/       # the app users run: tray, window, setup, updater, dictation  → talkee-app.exe
-│  └─ talkee-cli/           # developer tool: probe, cable, host, send, discover, dictate, keys  → talkee.exe
+│  └─ talkee-cli/           # developer tool: probe, cable, host, send, discover, dictate, keys, mesh  → talkee.exe
 ├─ app/                     # the phone app: Flutter UI (lib/) over a Kotlin engine (android/)
 ├─ relay/                   # the dictation relay on Netlify: holds the API keys, counts daily minutes
 ├─ installer/talkee.iss     # Inno Setup script for Talkee-Setup.exe
@@ -214,7 +236,8 @@ install. The licence terms and the package's hash and signature are in
 
 ## Code rules
 
-* `#![forbid(unsafe_code)]` in `talkee-proto`, `talkee-crypto`, `talkee-core` and `talkee-vmic`.
+* `#![forbid(unsafe_code)]` in `talkee-proto`, `talkee-crypto`, `talkee-core`, `talkee-vmic`,
+  `talkee-mesh` and `talkee-daemon`.
   `talkee-desktop` and `talkee-store` deny it, with the Win32 calls isolated in a few named modules
   (`message_pump`, `shell`, `single`, `logging`, `dpapi`).
 * The audio callback never allocates, never blocks and never resamples (see `talkee_vmic::build_typed`).

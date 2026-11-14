@@ -2823,9 +2823,11 @@ dependencies = [
  "cpal",
  "qrcode",
  "rqrr",
+ "serde_json",
  "talkee-core",
  "talkee-dictate",
  "talkee-discovery",
+ "talkee-mesh",
  "talkee-proto",
  "talkee-store",
  "talkee-vmic",
@@ -2852,6 +2854,18 @@ dependencies = [
  "hex",
  "hmac",
  "sha2",
+]
+
+[[package]]
+name = "talkee-daemon"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "qrcode",
+ "serde_json",
+ "talkee-mesh",
+ "talkee-store",
 ]
 
 [[package]]
@@ -2897,6 +2911,21 @@ dependencies = [
  "anyhow",
  "mdns-sd",
  "talkee-core",
+]
+
+[[package]]
+name = "talkee-mesh"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "getrandom 0.2.17",
+ "hex",
+ "hmac",
+ "serde",
+ "serde_json",
+ "sha2",
+ "talkee-crypto",
+ "talkee-store",
 ]
 
 [[package]]
