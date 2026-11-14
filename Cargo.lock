@@ -2864,6 +2864,7 @@ dependencies = [
  "clap",
  "qrcode",
  "serde_json",
+ "talkee-discovery",
  "talkee-mesh",
  "talkee-store",
 ]

@@ -20,6 +20,8 @@
 //! `talkee discover` on the desktop is therefore both a diagnostic and the
 //! reference implementation of the query side.
 
+pub mod mesh;
+
 use anyhow::{anyhow, Result};
 use mdns_sd::{Receiver, ResolvedService, ServiceDaemon, ServiceEvent, ServiceInfo};
 use std::net::Ipv4Addr;
@@ -128,7 +130,7 @@ pub fn default_instance_name() -> String {
 /// DNS labels are letters, digits and hyphens. A space in a host name makes the
 /// A record unresolvable, which presents as "discovery works but connection
 /// fails" — a genuinely confusing bug, so it is normalised here and tested.
-fn sanitize_host_label(instance: &str) -> String {
+pub(crate) fn sanitize_host_label(instance: &str) -> String {
     let mut out = String::with_capacity(instance.len());
     let mut last_was_dash = false;
     for ch in instance.chars() {
@@ -155,6 +157,10 @@ pub struct Advertisement {
 }
 
 impl Advertisement {
+    pub(crate) fn new(daemon: ServiceDaemon, fullname: String) -> Self {
+        Self { daemon, fullname }
+    }
+
     /// The full mDNS name other devices see, e.g.
     /// `Talkee on DESKTOP-ABC._talkee._tcp.local.`
     pub fn fullname(&self) -> &str {

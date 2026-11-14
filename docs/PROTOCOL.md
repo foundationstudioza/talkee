@@ -442,6 +442,19 @@ A device is `{"id":"<32 hex>","name":"...","kind":"pc"|"phone"|"server","caps":[
 "version":"...","os":"..."}`, with capabilities `mic`, `dictate`, `type-at-cursor`, `agents`,
 `files`. Keys are kept in `mesh.dat` (DPAPI on Windows; mode 0600 under `~/.config/talkee` on Linux).
 
+**Finding a peer again.** Every mesh node advertises `_talkee-mesh._tcp.local.` (separate from the
+microphone's `_talkee._tcp`) with the SRV port = the mesh port and TXT records `id` (32 hex device
+id), `n` (name, at most 100 bytes), `k` (`pc`/`phone`/`server`), `v` (mesh version). No key and no
+key fingerprint is published; the id is a label, and whoever answers at an address still has to
+prove the pair's key in the handshake. Only LAN-reachable addresses are advertised (not
+link-local, WSL or Tailscale).
+A dialler tries the saved address first. If that fails it browses for about 2 s for a service whose
+`id` is the peer's, dials its addresses, and on success saves the new address in `mesh.dat`
+(`node::connect_peer_with`; the mDNS resolver is injected, so `talkee-mesh` has no discovery code).
+Across subnets or a VPN, where multicast does not travel, set the address by hand:
+`talkee mesh set-addr <who> <host[:port]>` (a Tailscale name or fixed IP; port defaults to 47810).
+`talkee mesh discover` lists the nodes currently advertising.
+
 ## What is deliberately *not* here
 
 * **No session resumption without a handshake.** A pairing is a fresh challenge and
