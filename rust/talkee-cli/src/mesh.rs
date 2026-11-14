@@ -26,6 +26,17 @@ enum MeshCommand {
         #[arg(default_value = "null")]
         body: String,
     },
+    /// Set the address a paired device is dialled on, e.g. a Tailscale name or fixed IP.
+    SetAddr {
+        who: String,
+        /// `host` or `host:port` (port defaults to 47810).
+        addr: String,
+    },
+    /// Look for mesh devices on the local network (mDNS) for a few seconds.
+    Discover {
+        #[arg(long, default_value_t = 3)]
+        secs: u64,
+    },
     /// Unpair a device on this side.
     Forget { who: String },
 }
@@ -64,11 +75,29 @@ pub fn run(args: MeshArgs) -> Result<()> {
         }
         MeshCommand::Call { who, op, body } => {
             let body: Value = serde_json::from_str(&body)?;
-            let (_, mut client) = node::connect_peer(&store, &who)?;
+            let mut resolve = |id: &str, t: std::time::Duration| {
+                talkee_discovery::mesh::resolve_mesh_peer(id, t)
+            };
+            let (_, mut client) = node::connect_peer_with(&store, &who, &mut resolve)?;
             let started = std::time::Instant::now();
             let answer = client.call(&op, body)?;
             println!("{}", serde_json::to_string_pretty(&answer)?);
             eprintln!("({} ms)", started.elapsed().as_millis());
+        }
+        MeshCommand::SetAddr { who, addr } => {
+            let (peer, addr) = node::set_peer_addr(&store, &who, &addr)?;
+            println!("{} will be dialled at {addr}.", peer.name);
+        }
+        MeshCommand::Discover { secs } => {
+            let paired = Peers::load(&store)?;
+            let found = talkee_discovery::mesh::discover_mesh(std::time::Duration::from_secs(secs))?;
+            if found.is_empty() {
+                println!("No mesh devices answered.");
+            }
+            for h in found {
+                let tag = if paired.get(&h.id).is_some() { "paired" } else { "not paired" };
+                println!("{:<24} {:<7} {}  {}  {}", h.name, h.kind, &h.id[..8], h.dial_addrs().join(","), tag);
+            }
         }
         MeshCommand::Forget { who } => {
             let mut peers = Peers::load(&store)?;

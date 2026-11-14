@@ -77,6 +77,24 @@ fn run(store: Store, device: Device, port: u16) -> Result<()> {
         device.name,
         &device.id[..8]
     );
+    // Let paired devices find this one again after its address changes. Best effort: a machine
+    // with no LAN address, or no multicast, still serves on the saved address.
+    let _advert = match talkee_discovery::mesh::advertise_mesh(
+        &device.id,
+        &device.name,
+        "server",
+        talkee_mesh::MESH_VERSION,
+        port,
+    ) {
+        Ok(a) => {
+            println!("advertising {}", a.fullname());
+            Some(a)
+        }
+        Err(e) => {
+            eprintln!("mDNS advertising is off: {e:#}");
+            None
+        }
+    };
     let node = Arc::new(Node::new(store, device)?);
     node::serve(node, listener, Arc::new(Server))
 }

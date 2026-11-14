@@ -294,6 +294,110 @@ pub fn connect_peer(store: &Store, who: &str) -> Result<(Peer, Client)> {
     Ok((peer, client))
 }
 
+/// How long a fallback look on the network may take.
+pub const FALLBACK_BROWSE: Duration = Duration::from_secs(2);
+
+/// Finds the addresses a device may now be at, given its id and how long to look. The mDNS one
+/// lives in `talkee-discovery` (this crate has no network-discovery code); tests pass a closure.
+pub type Resolver<'a> = &'a mut dyn FnMut(&str, Duration) -> Vec<String>;
+
+/// Tries the saved address first, then whatever `resolve` finds. Returns the address that worked
+/// and what `dial` made of it. Dialling a wrong device fails in the handshake (the key does not
+/// match), so a stranger at a recycled address is never mistaken for the peer.
+fn dial_with_fallback<T>(
+    id: &str,
+    saved: Option<&str>,
+    resolve: Option<Resolver>,
+    mut dial: impl FnMut(&str) -> Result<T>,
+) -> Result<(String, T)> {
+    let mut first_err = None;
+    if let Some(addr) = saved {
+        match dial(addr) {
+            Ok(t) => return Ok((addr.to_owned(), t)),
+            Err(e) => first_err = Some(e),
+        }
+    }
+    if let Some(resolve) = resolve {
+        for addr in resolve(id, FALLBACK_BROWSE) {
+            if Some(addr.as_str()) == saved {
+                continue;
+            }
+            if let Ok(t) = dial(&addr) {
+                return Ok((addr, t));
+            }
+        }
+    }
+    Err(first_err.unwrap_or_else(|| anyhow!("no address to call it on")))
+}
+
+/// Like [`connect_peer`], but when the saved address does not answer, asks `resolve` where the
+/// device is now and, if that works, saves the new address in `mesh.dat`.
+pub fn connect_peer_with(store: &Store, who: &str, resolve: Resolver) -> Result<(Peer, Client)> {
+    let peers = Peers::load(store)?;
+    let mut peer = peers
+        .get(who)
+        .cloned()
+        .ok_or_else(|| anyhow!("no paired device called {who}"))?;
+    let psk = peer.psk()?;
+    let (addr, client) = dial_with_fallback(&peer.id, peer.addr.as_deref(), Some(resolve), |a| {
+        Client::connect(a, &psk, Duration::from_secs(5))
+    })
+    .with_context(|| format!("could not reach {}", peer.name))?;
+    if peer.addr.as_deref() != Some(addr.as_str()) {
+        // Re-read before writing, so a change made meanwhile (a forget) is not undone.
+        let mut fresh = Peers::load(store)?;
+        if let Some(p) = fresh.get_mut(&peer.id) {
+            p.addr = Some(addr.clone());
+            fresh.save(store)?;
+        }
+        peer.addr = Some(addr);
+    }
+    Ok((peer, client))
+}
+
+/// Sets the address a saved peer is dialled on (a Tailscale name, a fixed IP). `host` may omit
+/// the port, which then defaults to the mesh port.
+pub fn set_peer_addr(store: &Store, who: &str, host: &str) -> Result<(Peer, String)> {
+    let host = host.trim();
+    if host.is_empty() || host.contains(char::is_whitespace) {
+        bail!("that is not an address");
+    }
+    let addr = normalize_addr(host)?;
+    let mut peers = Peers::load(store)?;
+    let id = peers
+        .get(who)
+        .map(|p| p.id.clone())
+        .ok_or_else(|| anyhow!("no paired device called {who}"))?;
+    let p = peers.get_mut(&id).expect("just found");
+    p.addr = Some(addr.clone());
+    let peer = p.clone();
+    peers.save(store)?;
+    Ok((peer, addr))
+}
+
+/// `host` or `host:port` (or `[v6]` / `[v6]:port`, or a bare IPv6 literal) to `host:port`.
+fn normalize_addr(host: &str) -> Result<String> {
+    if let Some(rest) = host.strip_prefix('[') {
+        let (h, tail) = rest.split_once(']').ok_or_else(|| anyhow!("unclosed [ in address"))?;
+        return match tail.strip_prefix(':') {
+            Some(p) => Ok(host_port(h, p.parse().context("port")?)),
+            None if tail.is_empty() => Ok(host_port(h, MESH_PORT)),
+            None => bail!("that is not an address"),
+        };
+    }
+    match host.matches(':').count() {
+        0 => Ok(host_port(host, MESH_PORT)),
+        1 => {
+            let (h, p) = host.split_once(':').unwrap();
+            if h.is_empty() {
+                bail!("that is not an address");
+            }
+            Ok(host_port(h, p.parse().context("port")?))
+        }
+        _ => Ok(host_port(host, MESH_PORT)),
+    }
+}
+
 /// `host:port`, bracketing an IPv6 literal.
 pub fn host_port(host: &str, port: u16) -> String {
     if host.contains(':') {
@@ -327,6 +431,82 @@ mod tests {
         fn handle(&self, peer: &Peer, op: &str, body: &Value) -> Result<Option<Value>> {
             Ok((op == "echo").then(|| json!({"from": peer.name, "body": body})))
         }
+    }
+
+    #[test]
+    fn fast_path_does_not_browse() {
+        let mut asked = false;
+        let mut resolve = |_: &str, _: Duration| {
+            asked = true;
+            vec![]
+        };
+        let (addr, v) =
+            dial_with_fallback("id", Some("1.1.1.1:1"), Some(&mut resolve), |a| Ok(a.len())).unwrap();
+        assert_eq!((addr.as_str(), v), ("1.1.1.1:1", 9));
+        assert!(!asked);
+    }
+
+    #[test]
+    fn falls_back_to_resolver_and_skips_the_dead_address() {
+        let mut dialled = vec![];
+        let mut resolve = |id: &str, _: Duration| {
+            assert_eq!(id, "id");
+            vec!["1.1.1.1:1".to_owned(), "2.2.2.2:2".to_owned(), "3.3.3.3:3".to_owned()]
+        };
+        let (addr, ()) = dial_with_fallback("id", Some("1.1.1.1:1"), Some(&mut resolve), |a| {
+            dialled.push(a.to_owned());
+            if a == "3.3.3.3:3" { Ok(()) } else { bail!("down") }
+        })
+        .unwrap();
+        assert_eq!(addr, "3.3.3.3:3");
+        assert_eq!(dialled, ["1.1.1.1:1", "2.2.2.2:2", "3.3.3.3:3"], "saved address is not retried");
+    }
+
+    #[test]
+    fn no_saved_address_still_uses_the_resolver_and_failure_reports_the_first_error() {
+        let mut resolve = |_: &str, _: Duration| vec!["2.2.2.2:2".to_owned()];
+        assert!(dial_with_fallback("id", None, Some(&mut resolve), |_| Ok(())).is_ok());
+        let mut none = |_: &str, _: Duration| vec![];
+        let e = dial_with_fallback::<()>("id", Some("1.1.1.1:1"), Some(&mut none), |_| bail!("refused"))
+            .unwrap_err();
+        assert_eq!(e.to_string(), "refused");
+    }
+
+    #[test]
+    fn addresses_normalise() {
+        assert_eq!(normalize_addr("compaq.tail1234.ts.net").unwrap(), "compaq.tail1234.ts.net:47810");
+        assert_eq!(normalize_addr("100.64.0.5:9000").unwrap(), "100.64.0.5:9000");
+        assert_eq!(normalize_addr("fd7a::1").unwrap(), "[fd7a::1]:47810");
+        assert_eq!(normalize_addr("[fd7a::1]:1234").unwrap(), "[fd7a::1]:1234");
+        assert!(normalize_addr(":80").is_err());
+        assert!(normalize_addr("host:notaport").is_err());
+    }
+
+    #[test]
+    fn fallback_saves_the_new_address_and_set_addr_works() {
+        let (s_store, s_dev) = node("fb-server", Kind::Server);
+        let (c_store, c_dev) = node("fb-pc", Kind::Pc);
+        let server = Arc::new(Node::new(s_store, s_dev).unwrap());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let link = server.invite_link("127.0.0.1", port).unwrap();
+        {
+            let server = server.clone();
+            std::thread::spawn(move || serve(server, listener, Arc::new(Echo)));
+        }
+        let peer = join(&c_store, &c_dev, &link).unwrap();
+        // The saved address goes stale (a port nothing listens on).
+        let (_, stale) = set_peer_addr(&c_store, "fb-server", "127.0.0.1:1").unwrap();
+        assert_eq!(stale, "127.0.0.1:1");
+        let good = format!("127.0.0.1:{port}");
+        let mut resolve = |id: &str, _: Duration| {
+            assert_eq!(id, peer.id);
+            vec![good.clone()]
+        };
+        let (p, mut client) = connect_peer_with(&c_store, "fb-server", &mut resolve).unwrap();
+        assert_eq!(p.addr.as_deref(), Some(good.as_str()));
+        client.call("ping", Value::Null).unwrap();
+        assert_eq!(Peers::load(&c_store).unwrap().get("fb-server").unwrap().addr.as_deref(), Some(good.as_str()));
     }
 
     #[test]
