@@ -175,6 +175,11 @@ class TalkeePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventChanne
             "meshPeers" -> result.success(
                 MeshStore.peers(context).map { it.toPublicJson().toString() },
             )
+            // Collect introductions to devices that joined the mesh elsewhere. Answers true.
+            "meshSync" -> background("talkee-mesh-sync") {
+                val ok = runCatching { MeshStore.sync(context) }.getOrDefault(false)
+                handler.post { result.success(ok) }
+            }
             "meshForget" -> {
                 val id = call.argument<String>("id")
                 if (id == null) result.error("bad-args", "meshForget needs an id", null)
@@ -184,13 +189,14 @@ class TalkeePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventChanne
             "meshCall" -> {
                 val id = call.argument<String>("id")
                 val op = call.argument<String>("op")
-                val peer = MeshStore.peers(context).firstOrNull { it.id == id }
+                val all = MeshStore.peers(context)
+                val peer = all.firstOrNull { it.id == id }
                 if (peer == null || op == null) {
                     result.error("unknown-device", "that device is not on this phone any more", null)
                 } else {
                     background("talkee-mesh-call") {
                         try {
-                            val text = MeshClient.call(peer, op)
+                            val text = MeshClient.call(peer, op, all)
                             handler.post { result.success(text) }
                         } catch (e: Exception) {
                             handler.post { result.error("mesh-failed", meshProblem(e), null) }
@@ -210,8 +216,8 @@ class TalkeePlugin : FlutterPlugin, MethodChannel.MethodCallHandler, EventChanne
     private fun joinMesh(link: PairLink, result: MethodChannel.Result) {
         background("talkee-mesh-join") {
             try {
-                val peer = MeshClient.join(link, MeshStore.deviceId(context), MeshStore.deviceName())
-                if (!MeshStore.add(context, peer)) {
+                val (peer, intros) = MeshClient.join(link, MeshStore.deviceId(context), MeshStore.deviceName())
+                if (!MeshStore.addWithIntros(context, peer, intros)) {
                     handler.post { result.error("pairing-failed", "could not store the new device safely", null) }
                 } else {
                     handler.post { result.success("mesh") }

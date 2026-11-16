@@ -49,6 +49,10 @@ pub struct Device {
     /// The operating system (`linux`, `windows`, `android`), filled in at run time.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub os: String,
+    /// Where it can be dialled (`host:port`): every LAN and Tailscale address of a device that
+    /// listens. Filled in at run time; empty for a device that only dials (a phone).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub addrs: Vec<String>,
 }
 
 impl Device {
@@ -75,6 +79,7 @@ impl Device {
                     caps: Vec::new(),
                     version: String::new(),
                     os: String::new(),
+                    addrs: Vec::new(),
                 }
             }
         };
@@ -93,6 +98,7 @@ impl Device {
         let stored = Device {
             version: String::new(),
             os: String::new(),
+            addrs: Vec::new(),
             ..self.clone()
         };
         let path = store.root().join(FILE);

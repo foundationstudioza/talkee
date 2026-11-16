@@ -25,7 +25,10 @@ const CAPS: &[Capability] = &[Capability::Mic, Capability::Dictate, Capability::
 
 /// This PC's identity, made on first use.
 pub fn this_device(store: &Store) -> Result<Device> {
-    Device::load_or_create(store, Kind::Pc, CAPS)
+    let mut device = Device::load_or_create(store, Kind::Pc, CAPS)?;
+    // Every way to reach this PC (LAN, Tailscale), so peers it is introduced to can dial it.
+    device.addrs = talkee_discovery::mesh::local_dial_addrs(MESH_PORT);
+    Ok(device)
 }
 
 /// Answers the operations this PC adds to the built-in ones.
@@ -77,10 +80,14 @@ pub fn start() -> String {
         }
     };
     let dir = store.root().to_path_buf();
-    let node = match Node::new(store, device) {
-        Ok(n) => Arc::new(n),
+    let mut node = match Node::new(store, device) {
+        Ok(n) => n,
         Err(e) => return format!("mesh: off, pairings unreadable ({e:#})"),
     };
+    node.resolver = Some(Box::new(talkee_discovery::mesh::resolve_mesh_peer));
+    let node = Arc::new(node);
+    // Introductions and addresses travel at every sync, so devices stay joined up by themselves.
+    node::spawn_sync(node.clone(), std::time::Duration::from_secs(60));
     let spawned = std::thread::Builder::new().name("talkee-mesh".into()).spawn(move || {
         let _ = node::serve(node, listener, Arc::new(PcHandler::new(dir)));
     });

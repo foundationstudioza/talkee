@@ -116,6 +116,12 @@ join this PC. The app also listens on TCP 47810 so paired servers can call the P
 tells them whether dictation is on and the minutes used today); its Windows Firewall rule is per
 program, so it covers that port too.
 
+**Pair once.** A device that pairs with any one of your devices joins all of them: the others are
+introduced automatically, and when two cannot reach each other directly (a phone on Wi-Fi and a
+server behind the PC), a device that can reach both relays. With Tailscale on both ends, devices find
+each other away from home too. In the PC window, *Devices* > *Pair a new device* shows a code the
+phone scans.
+
 Each pair of devices has its own key, and `talkeed forget <name>` (or `talkee mesh forget`) revokes
 one device without touching the others. The link is encrypted and both sides prove they hold the key
 (see `docs/PROTOCOL.md`, *Device mesh*). Running coding agents on these devices comes next.

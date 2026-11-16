@@ -78,9 +78,9 @@ pub fn run(args: MeshArgs) -> Result<()> {
             let mut resolve = |id: &str, t: std::time::Duration| {
                 talkee_discovery::mesh::resolve_mesh_peer(id, t)
             };
-            let (_, mut client) = node::connect_peer_with(&store, &who, &mut resolve)?;
             let started = std::time::Instant::now();
-            let answer = client.call(&op, body)?;
+            // Directly if it answers, otherwise through a paired device that can reach it.
+            let answer = node::call_peer(&store, &who, &op, body, &mut resolve)?;
             println!("{}", serde_json::to_string_pretty(&answer)?);
             eprintln!("({} ms)", started.elapsed().as_millis());
         }

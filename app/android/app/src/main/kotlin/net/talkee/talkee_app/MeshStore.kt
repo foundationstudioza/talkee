@@ -43,6 +43,25 @@ object MeshStore {
     fun add(context: Context, peer: MeshPeer): Boolean =
         PairingStore.saveEntry(context, ENTRY, MeshPeers.encode(MeshPeers.upsert(peers(context), peer)))
 
+    /** Stores a newly joined device and the devices it introduced. */
+    @Synchronized
+    fun addWithIntros(context: Context, peer: MeshPeer, intros: List<MeshPeer>): Boolean {
+        val all = MeshPeers.apply(MeshPeers.upsert(peers(context), peer), intros, deviceId(context))
+        return PairingStore.saveEntry(context, ENTRY, MeshPeers.encode(all))
+    }
+
+    /** Syncs with every reachable peer and stores what was learned. Blocks on the network. */
+    fun sync(context: Context): Boolean {
+        val before = peers(context)
+        val after = MeshClient.sync(before, deviceId(context), deviceName())
+        synchronized(this) {
+            // Re-read, so a forget made meanwhile is not undone.
+            val current = peers(context)
+            val merged = after.filter { a -> current.any { it.id == a.id } || before.none { it.id == a.id } }
+            return PairingStore.saveEntry(context, ENTRY, MeshPeers.encode(merged))
+        }
+    }
+
     @Synchronized
     fun forget(context: Context, id: String): Boolean =
         PairingStore.saveEntry(context, ENTRY, MeshPeers.encode(peers(context).filter { it.id != id }))

@@ -38,9 +38,16 @@ pub struct Peer {
     pub caps: Vec<Capability>,
     /// The pair's key, base64url. Never printed.
     key: String,
+    /// The key this pair used before an introduction replaced it, still accepted and tried, so a
+    /// pair where only one side has heard of the new key keeps working.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    old_key: Option<String>,
     /// Where it was last reached (`host:port`), if this side dials it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub addr: Option<String>,
+    /// Other addresses it said it has (LAN, Tailscale), tried after `addr`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alt_addrs: Vec<String>,
     /// Unix seconds.
     pub paired_at: u64,
     #[serde(default)]
@@ -74,7 +81,9 @@ impl Peer {
             kind,
             caps,
             key: psk.to_base64url(),
+            old_key: None,
             addr,
+            alt_addrs: Vec::new(),
             paired_at: now(),
             last_seen: now(),
         }
@@ -84,10 +93,40 @@ impl Peer {
         Psk::from_base64url(&self.key)
     }
 
+    /// Every key this pair may be using, newest first.
+    pub fn keys(&self) -> Vec<Psk> {
+        std::iter::once(&self.key)
+            .chain(self.old_key.as_ref())
+            .filter_map(|k| Psk::from_base64url(k).ok())
+            .collect()
+    }
+
     /// The key's public fingerprint, which is how a connecting device says which key it holds.
     pub fn fingerprint(&self) -> String {
         self.psk().map(|k| k.fingerprint()).unwrap_or_default()
     }
+}
+
+/// An introduction: "here is a device in the mesh, and the key you share with it".
+///
+/// When a device joins one member, that member makes a fresh key for the newcomer and each of its
+/// other peers and tells both sides, so nobody pairs every device with every other device by hand.
+/// One key per pair still holds: the introducer knows it, and nobody else.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Intro {
+    /// Who this introduction is for (set while it waits in the queue).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub for_peer: String,
+    pub id: String,
+    pub name: String,
+    pub kind: Kind,
+    #[serde(default)]
+    pub caps: Vec<Capability>,
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub addr: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub alt_addrs: Vec<String>,
 }
 
 /// A key handed out in a link, waiting for a device to use it.
@@ -110,6 +149,9 @@ pub struct Peers {
     pub peers: Vec<Peer>,
     #[serde(default)]
     invites: Vec<Invite>,
+    /// Introductions waiting to be delivered to a peer that was not reachable.
+    #[serde(default)]
+    pub pending: Vec<Intro>,
 }
 
 /// What a key presented in a handshake turned out to be.
@@ -128,6 +170,17 @@ impl Peers {
             .strip_prefix(MAGIC.as_slice())
             .context("mesh.dat is not a Talkee mesh file")?;
         serde_json::from_slice(json).context("reading mesh.dat")
+    }
+
+    /// Reads `mesh.dat`, applies `f` and saves, holding a process-wide lock throughout, so two
+    /// threads changing it at once cannot lose each other's change.
+    pub fn update<R>(store: &Store, f: impl FnOnce(&mut Peers) -> R) -> Result<R> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _held = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut peers = Peers::load(store)?;
+        let r = f(&mut peers);
+        peers.save(store)?;
+        Ok(r)
     }
 
     pub fn save(&self, store: &Store) -> Result<()> {
@@ -161,7 +214,7 @@ impl Peers {
     /// The key a connecting device holds, by its fingerprint: a paired device's, or a live invite's.
     pub fn find_key(&self, fingerprint: &str) -> Option<KeyMatch> {
         for p in &self.peers {
-            if let Ok(k) = p.psk() {
+            for k in p.keys() {
                 if k.fingerprint() == fingerprint {
                     return Some(KeyMatch::Peer(k, p.id.clone()));
                 }
@@ -204,8 +257,101 @@ impl Peers {
         self.peers.iter_mut().find(|p| p.id == id)
     }
 
+    /// Takes in an introduction. A device already paired keeps its old key as a fallback, so a
+    /// side that has not heard of the new key yet still gets in. Returns true if anything changed.
+    pub fn apply(&mut self, intro: &Intro, my_id: &str) -> bool {
+        if intro.id == my_id || !crate::identity::valid_id(&intro.id) {
+            return false;
+        }
+        if Psk::from_base64url(&intro.key).is_err() {
+            return false;
+        }
+        if let Some(p) = self.get_mut(&intro.id) {
+            if p.key == intro.key {
+                return false;
+            }
+            p.old_key = Some(std::mem::replace(&mut p.key, intro.key.clone()));
+            if p.addr.is_none() {
+                p.addr = intro.addr.clone();
+            }
+            for a in &intro.alt_addrs {
+                if !p.alt_addrs.contains(a) {
+                    p.alt_addrs.push(a.clone());
+                }
+            }
+            return true;
+        }
+        self.peers.push(Peer {
+            id: intro.id.clone(),
+            name: crate::identity::clean_name(&intro.name),
+            kind: intro.kind,
+            caps: intro.caps.clone(),
+            key: intro.key.clone(),
+            old_key: None,
+            addr: intro.addr.clone(),
+            alt_addrs: intro.alt_addrs.clone(),
+            paired_at: now(),
+            last_seen: 0,
+        });
+        true
+    }
+
+    /// Makes introductions between `newcomer` and every other peer: returns the ones for the
+    /// newcomer, and queues the matching ones for the others in [`Peers::pending`].
+    pub fn introduce(&mut self, newcomer: &str, newcomer_addr: Option<String>) -> Result<Vec<Intro>> {
+        let Some(new) = self.get(newcomer).cloned() else { return Ok(Vec::new()) };
+        let mut for_newcomer = Vec::new();
+        for p in self.peers.clone() {
+            if p.id == new.id {
+                continue;
+            }
+            let key = Psk::generate()?.to_base64url();
+            for_newcomer.push(Intro {
+                for_peer: String::new(),
+                id: p.id.clone(),
+                name: p.name.clone(),
+                kind: p.kind,
+                caps: p.caps.clone(),
+                key: key.clone(),
+                addr: p.addr.clone(),
+                alt_addrs: p.alt_addrs.clone(),
+            });
+            self.pending.push(Intro {
+                for_peer: p.id.clone(),
+                id: new.id.clone(),
+                name: new.name.clone(),
+                kind: new.kind,
+                caps: new.caps.clone(),
+                key,
+                addr: newcomer_addr.clone(),
+                alt_addrs: new.alt_addrs.clone(),
+            });
+        }
+        Ok(for_newcomer)
+    }
+
+    /// Removes and returns the introductions waiting for `peer`.
+    /// Every address worth trying for a peer: the saved one, then the others it reported.
+    pub fn dial_addrs(p: &Peer) -> Vec<String> {
+        let mut out: Vec<String> = p.addr.iter().cloned().collect();
+        for a in &p.alt_addrs {
+            if !out.contains(a) {
+                out.push(a.clone());
+            }
+        }
+        out
+    }
+
+    pub fn take_pending(&mut self, peer: &str) -> Vec<Intro> {
+        let (mine, rest): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.pending).into_iter().partition(|i| i.for_peer == peer);
+        self.pending = rest;
+        mine
+    }
+
     /// Forgets a peer. Its key stops working at once.
     pub fn forget(&mut self, id: &str) -> bool {
+        self.pending.retain(|i| i.for_peer != id && i.id != id);
         let before = self.peers.len();
         self.peers.retain(|p| p.id != id);
         self.peers.len() != before

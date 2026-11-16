@@ -88,7 +88,19 @@ class _DevicesScreenState extends State<DevicesScreen> {
   @override
   void initState() {
     super.initState();
-    _load();
+    _load().then((_) => _sync());
+  }
+
+  /// Picks up devices that joined the mesh elsewhere (introductions), then shows the new list.
+  Future<void> _sync() async {
+    try {
+      await _mesh.invokeMethod<bool>('meshSync');
+    } on PlatformException {
+      // Nothing reachable now; the list stays as it was.
+    } on MissingPluginException {
+      return; // Tests.
+    }
+    await _load();
   }
 
   Future<void> _load() async {

@@ -438,8 +438,30 @@ invite may only send `pair.complete` (body: the dialer's device; answer:
 `{"device": <the listener's>, "key": "<new pair key, base64url>"}`). Every node
 answers `device.info`, `peers.list` (never keys) and `ping`; `talkeed` adds `system.status`.
 
+**Pair once, join the mesh.** When a device joins any member, that member makes a fresh key for
+the newcomer and each of its other peers. It hands the newcomer's half over in the `pair.complete`
+answer (`"introductions": [...]`, each `{"id","name","kind","caps","key","addr","alt_addrs"}`) and
+queues the other half for each peer. Queued introductions are delivered with `mesh.introduce`
+(`{"introductions": [...]}`) when the peer is reachable, or collected by the peer with `mesh.sync`
+(body: the caller's device, so the answerer also learns its current addresses; answer:
+`{"device": ..., "introductions": [...]}`). Every listening node syncs with its peers every minute.
+One key per pair still holds, and the introducer is the only third party that ever knew it. A
+device that already had a key for that peer keeps the old one as a fallback, so a pair where only one
+side has heard of the new key still connects.
+
+**Relay.** `mesh.relay` (`{"to": "<peer id>", "op": "...", "body": ...}`) asks a member to make one
+call to one of its own peers and return the answer: how a phone on Wi-Fi reaches a server only the PC
+can see. `mesh.*` and `pair.*` cannot be relayed, and relays do not chain. The target sees the call
+as coming from the relaying device. Callers try every address directly (1.5 s each), then each other
+peer as a relay.
+
+**Away from home.** A listening device reports every address it has in its device's `addrs`
+(private LAN first, then Tailscale's 100.64.0.0/10; container and VM bridges left out), and peers try
+them in turn, so two devices on Tailscale reach each other anywhere. There is no Talkee-run internet
+relay yet.
+
 A device is `{"id":"<32 hex>","name":"...","kind":"pc"|"phone"|"server","caps":[...],
-"version":"...","os":"..."}`, with capabilities `mic`, `dictate`, `type-at-cursor`, `agents`,
+"version":"...","os":"...","addrs":["host:port",...]}`, with capabilities `mic`, `dictate`, `type-at-cursor`, `agents`,
 `files`. Keys are kept in `mesh.dat` (DPAPI on Windows; mode 0600 under `~/.config/talkee` on Linux).
 
 **Finding a peer again.** Every mesh node advertises `_talkee-mesh._tcp.local.` (separate from the

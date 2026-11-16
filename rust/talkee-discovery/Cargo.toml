@@ -10,3 +10,6 @@ description = "Talkee zero-configuration discovery: advertise and find hosts ove
 talkee-core = { workspace = true }
 anyhow = { workspace = true }
 mdns-sd = "0.21"
+# Every interface address, so a device can tell peers all the ways to reach it (LAN and
+# Tailscale). Already in the build through mdns-sd.
+if-addrs = "0.15"

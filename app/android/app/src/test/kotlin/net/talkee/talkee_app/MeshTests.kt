@@ -198,7 +198,7 @@ class MeshTests {
             )
         }
         val link = PairLink("127.0.0.1", listener.port, "compaq", Mesh.fingerprint(key), key)
-        val peer = MeshClient.join(link, "cd".repeat(16), "Pixel Test")
+        val peer = MeshClient.join(link, "cd".repeat(16), "Pixel Test").first
         assertNull(listener.failure)
 
         val sent = listener.seen.single().getJSONObject("body")
@@ -263,7 +263,7 @@ class MeshTests {
         Assume.assumeTrue("set TALKEE_MESH_LIVE_LINK to a fresh `talkeed pair` link", !text.isNullOrBlank())
         val link = PairLink.parse(text!!)
         assertNotNull(link)
-        val peer = MeshClient.join(link!!, "ef".repeat(16), "Unit test phone")
+        val peer = MeshClient.join(link!!, "ef".repeat(16), "Unit test phone").first
         val info = JSONObject(MeshClient.call(peer, "device.info"))
         assertEquals(peer.id, info.getString("id"))
         assertEquals(peer.kind, info.getString("kind"))
@@ -278,5 +278,28 @@ class MeshTests {
 
     private fun assertNull(t: Throwable?) {
         if (t != null) throw AssertionError("fake listener failed", t)
+    }
+
+    @Test
+    fun introductions_add_new_devices_and_keep_the_old_key_as_a_fallback() {
+        val k1 = ByteArray(32) { 1 }
+        val k2 = ByteArray(32) { 2 }
+        val b64 = { b: ByteArray -> java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(b) }
+        val pc = MeshPeer("aa".repeat(16), "pc", "pc", emptyList(), k1, "10.0.0.2:47810")
+        val body = JSONObject().put("introductions", org.json.JSONArray()
+            .put(JSONObject().put("id", "bb".repeat(16)).put("name", "compaq").put("kind", "server")
+                .put("key", b64(k2)).put("addr", "192.168.137.2:47810"))
+            .put(JSONObject().put("id", "aa".repeat(16)).put("name", "pc").put("kind", "pc").put("key", b64(k2)))
+            .put(JSONObject().put("id", "cc".repeat(16)).put("name", "me").put("kind", "phone").put("key", b64(k2))))
+        val out = MeshPeers.apply(listOf(pc), MeshPeers.intros(body), "cc".repeat(16))
+        assertEquals("the phone does not add itself", 2, out.size)
+        val server = out.first { it.name == "compaq" }
+        assertArrayEquals(k2, server.key)
+        val pc2 = out.first { it.name == "pc" }
+        assertArrayEquals("the new key is used", k2, pc2.key)
+        assertArrayEquals("the old key is kept as a fallback", k1, pc2.oldKey)
+        assertEquals("10.0.0.2:47810", pc2.addr)
+        val round = MeshPeers.decode(MeshPeers.encode(out)).first { it.name == "pc" }
+        assertArrayEquals(k1, round.oldKey)
     }
 }

@@ -207,3 +207,62 @@ mod tests {
         assert_eq!(h.dial_addrs()[0], "192.168.137.5:47810");
     }
 }
+
+/// Every address a peer could dial this device on, as `host:port`: private LAN addresses first,
+/// then Tailscale's (100.64.0.0/10, which is what makes the mesh work away from home), then any
+/// other non-loopback IPv4. Link-local addresses are skipped: they are never routable.
+pub fn local_dial_addrs(port: u16) -> Vec<String> {
+    let mut ips: Vec<Ipv4Addr> = if_addrs::get_if_addrs()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|i| !is_virtual_interface(&i.name))
+        .filter_map(|i| match i.ip() {
+            std::net::IpAddr::V4(v4) => Some(v4),
+            _ => None,
+        })
+        .filter(|ip| !ip.is_loopback() && !ip.is_link_local() && !ip.is_unspecified())
+        .collect();
+    ips.sort_by_key(|ip| address_rank(*ip));
+    ips.dedup();
+    ips.into_iter().map(|ip| format!("{ip}:{port}")).collect()
+}
+
+/// Container and VM bridges (Docker, libvirt, WSL, Hyper-V): addresses no other machine can reach,
+/// each of which would cost a peer a dial timeout.
+pub fn is_virtual_interface(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    ["docker", "br-", "veth", "virbr", "vmnet", "vboxnet", "cni", "flannel", "lxc"]
+        .iter()
+        .any(|p| n.starts_with(p))
+        || n.contains("wsl")
+        || n.contains("hyper-v")
+        || n.contains("(default switch)")
+}
+
+/// 0 for a private LAN address, 1 for Tailscale, 2 for anything else.
+pub fn address_rank(ip: Ipv4Addr) -> u8 {
+    let o = ip.octets();
+    if ip.is_private() {
+        0
+    } else if o[0] == 100 && (64..128).contains(&o[1]) {
+        1
+    } else {
+        2
+    }
+}
+
+#[cfg(test)]
+mod addr_tests {
+    use super::*;
+
+    #[test]
+    fn lan_before_tailscale_before_public() {
+        assert_eq!(address_rank(Ipv4Addr::new(192, 168, 0, 5)), 0);
+        assert_eq!(address_rank(Ipv4Addr::new(100, 101, 2, 3)), 1);
+        assert_eq!(address_rank(Ipv4Addr::new(8, 8, 8, 8)), 2);
+        assert!(local_dial_addrs(47810).iter().all(|a| a.ends_with(":47810")));
+        assert!(is_virtual_interface("docker0") && is_virtual_interface("br-3d0adacb7156"));
+        assert!(is_virtual_interface("vEthernet (WSL (Hyper-V firewall))"));
+        assert!(!is_virtual_interface("eno1") && !is_virtual_interface("Tailscale"));
+    }
+}

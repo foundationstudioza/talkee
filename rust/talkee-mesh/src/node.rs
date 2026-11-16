@@ -26,7 +26,7 @@ use talkee_crypto::{PairLink, Psk};
 use talkee_store::Store;
 
 use crate::identity::{valid_id, Device};
-use crate::peers::{now, KeyMatch, Peer, Peers};
+use crate::peers::{now, Intro, KeyMatch, Peer, Peers};
 use crate::wire::{self, Channel};
 use crate::MESH_PORT;
 
@@ -63,11 +63,16 @@ impl Handler for NoHandler {
     }
 }
 
+/// Where a peer is now, by id, looking for at most the given time (mDNS in practice).
+pub type FindPeer = dyn Fn(&str, Duration) -> Vec<String> + Send + Sync;
+
 /// This device, its peers, and where they are kept.
 pub struct Node {
     pub store: Store,
     pub device: Device,
     pub peers: Mutex<Peers>,
+    /// Finds a peer on the network when its saved addresses fail (mDNS, from `talkee-discovery`).
+    pub resolver: Option<Box<FindPeer>>,
 }
 
 impl Node {
@@ -77,6 +82,7 @@ impl Node {
             store,
             device,
             peers: Mutex::new(peers),
+            resolver: None,
         })
     }
 
@@ -87,15 +93,28 @@ impl Node {
         }
     }
 
-    fn save(&self) -> Result<()> {
-        self.peers.lock().unwrap().save(&self.store)
+    /// Changes the peer list atomically: under one lock, read `mesh.dat` fresh, apply `f`, save.
+    ///
+    /// Every change goes through here. Reloading and saving separately let one connection's reload
+    /// land between another's change and its save, and the save then wrote the list without it.
+    pub fn update<R>(&self, f: impl FnOnce(&mut Peers) -> R) -> Result<R> {
+        let mut memory = self.peers.lock().unwrap();
+        let mut copy = None;
+        let r = Peers::update(&self.store, |peers| {
+            let r = f(peers);
+            copy = Some(peers.clone());
+            r
+        })?;
+        if let Some(c) = copy {
+            *memory = c;
+        }
+        Ok(r)
     }
 
     /// Makes an invite and the link that carries it.
     pub fn invite_link(&self, host: &str, port: u16) -> Result<String> {
         self.reload();
-        let psk = self.peers.lock().unwrap().invite()?;
-        self.save()?;
+        let psk = self.update(|p| p.invite())??;
         Ok(PairLink::new(host, port, &self.device.name, psk)?.to_uri())
     }
 }
@@ -128,10 +147,11 @@ fn connection(node: &Node, stream: TcpStream, handler: &dyn Handler) -> Result<(
         KeyMatch::Invite(_) => None,
     };
     if let Some(id) = &peer_id {
-        if let Some(p) = node.peers.lock().unwrap().get_mut(id) {
-            p.last_seen = now();
-        }
-        let _ = node.save();
+        let _ = node.update(|peers| {
+            if let Some(p) = peers.get_mut(id) {
+                p.last_seen = now();
+            }
+        });
     }
     while let Some(bytes) = ch.recv()? {
         let req: Request = match serde_json::from_slice(&bytes) {
@@ -153,7 +173,7 @@ fn connection(node: &Node, stream: TcpStream, handler: &dyn Handler) -> Result<(
                     Some(_) if req.op == "pair.complete" => Err(anyhow!(
                         "this link was already used; run `talkeed pair` for a new one"
                     )),
-                    Some(peer) => builtin(node, &req).or_else(|| {
+                    Some(peer) => builtin(node, &peer, &req).or_else(|| {
                         handler
                             .handle(&peer, &req.op, &req.body)
                             .transpose()
@@ -185,16 +205,52 @@ fn complete(node: &Node, matched: &KeyMatch, ch: &Channel, body: &Value) -> Resu
     let name = crate::identity::clean_name(&them.name);
     let key = Psk::generate()?;
     let _ = ch.peer_addr();
-    let peer = Peer::new(them.id.clone(), name, them.kind, them.caps, &key, None);
-    node.peers.lock().unwrap().accept(invite, peer);
-    node.save()?;
+    let mut peer =
+        Peer::new(them.id.clone(), name, them.kind, them.caps, &key, them.addrs.first().cloned());
+    peer.alt_addrs = them.addrs.iter().skip(1).cloned().collect();
+    let intros = node.update(|peers| {
+        peers.accept(invite, peer);
+        // Joining one member joins the mesh: introduce the newcomer to everyone this node knows.
+        peers.introduce(&them.id, them.addrs.first().cloned())
+    })??;
+    // Tell the others now if they answer; whoever does not hears at the next sync.
+    deliver_soon(node);
     Ok((
         them.id,
-        json!({"device": node.device, "key": key.to_base64url()}),
+        json!({"device": node.device, "key": key.to_base64url(), "introductions": intros}),
     ))
 }
 
-fn builtin(node: &Node, req: &Request) -> Option<Result<Value>> {
+/// Runs one sync on a thread, so a new pairing reaches the other peers without waiting for the timer.
+fn deliver_soon(node: &Node) {
+    let store = node.store.clone();
+    let device = node.device.clone();
+    std::thread::spawn(move || {
+        if let Ok(fresh) = Node::new(store, device) {
+            fresh.sync();
+        }
+    });
+}
+
+/// Updates what a peer says about itself (name, capabilities, addresses).
+fn refresh_peer(peers: &mut Peers, peer_id: &str, body: &Value) {
+    let Ok(them) = serde_json::from_value::<Device>(body.clone()) else { return };
+    if them.id != peer_id {
+        return;
+    }
+    if let Some(p) = peers.get_mut(peer_id) {
+        p.name = crate::identity::clean_name(&them.name);
+        p.caps = them.caps;
+        if !them.addrs.is_empty() {
+            if !p.addr.as_ref().is_some_and(|a| them.addrs.contains(a)) {
+                p.addr = them.addrs.first().cloned();
+            }
+            p.alt_addrs = them.addrs;
+        }
+    }
+}
+
+fn builtin(node: &Node, peer: &Peer, req: &Request) -> Option<Result<Value>> {
     Some(match req.op.as_str() {
         "device.info" => serde_json::to_value(&node.device).map_err(Into::into),
         "ping" => Ok(json!({})),
@@ -208,8 +264,160 @@ fn builtin(node: &Node, req: &Request) -> Option<Result<Value>> {
                     .collect(),
             ))
         }
+        // The caller says who it is now and collects the introductions waiting for it.
+        "mesh.sync" => {
+            node.update(|peers| {
+                refresh_peer(peers, &peer.id, &req.body);
+                peers.take_pending(&peer.id)
+            })
+            .map(|intros| json!({"device": node.device, "introductions": intros}))
+        }
+        // The caller introduces us to devices it knows.
+        "mesh.introduce" => (|| {
+            let intros: Vec<Intro> = serde_json::from_value(req.body["introductions"].clone())
+                .context("mesh.introduce needs introductions")?;
+            node.update(|peers| {
+                for i in &intros {
+                    peers.apply(i, &node.device.id);
+                }
+            })?;
+            Ok(json!({}))
+        })(),
+        // One hop for a device that cannot reach the target itself (a phone on Wi-Fi and a server
+        // behind this PC). Only to this node's own peers, never another relay or a pairing.
+        "mesh.relay" => (|| {
+            let to = req.body["to"].as_str().context("mesh.relay needs `to`")?;
+            let op = req.body["op"].as_str().context("mesh.relay needs `op`")?;
+            if op.starts_with("mesh.") || op.starts_with("pair.") {
+                bail!("{op} cannot be relayed");
+            }
+            if to == peer.id {
+                bail!("that is you");
+            }
+            let target = node
+                .peers
+                .lock()
+                .unwrap()
+                .get(to)
+                .cloned()
+                .ok_or_else(|| anyhow!("this device is not paired with {to}"))?;
+            let mut client = dial_peer(&target, node.resolver.as_deref(), DIRECT_TIMEOUT)?.1;
+            client.call(op, req.body["body"].clone())
+        })(),
         _ => return None,
     })
+}
+
+impl Node {
+    /// One round with every peer that answers: deliver introductions waiting for it, tell it who we
+    /// are (so it learns our current addresses), and take what it has waiting for us. Peers that do
+    /// not answer are tried again next time. Call it every minute or so.
+    pub fn sync(&self) {
+        self.reload();
+        let peers: Vec<Peer> = self.peers.lock().unwrap().peers.clone();
+        for p in peers {
+            let Ok((addr, mut client)) = dial_peer(&p, None, DIRECT_TIMEOUT) else { continue };
+            let waiting = self.update(|peers| peers.take_pending(&p.id)).unwrap_or_default();
+            if !waiting.is_empty()
+                && client.call("mesh.introduce", json!({"introductions": waiting.clone()})).is_err()
+            {
+                let _ = self.update(|peers| peers.pending.extend(waiting));
+            }
+            let me = serde_json::to_value(&self.device).unwrap_or_default();
+            let Ok(answer) = client.call("mesh.sync", me) else { continue };
+            let intros: Vec<Intro> =
+                serde_json::from_value(answer["introductions"].clone()).unwrap_or_default();
+            let saved = self.update(|peers| {
+                for i in &intros {
+                    peers.apply(i, &self.device.id);
+                }
+                if let Some(q) = peers.get_mut(&p.id) {
+                    q.last_seen = now();
+                    q.addr = Some(addr);
+                }
+                refresh_peer(peers, &p.id, &answer["device"]);
+            });
+            if let Err(e) = saved {
+                eprintln!("mesh: saving after sync: {e:#}");
+            }
+        }
+    }
+}
+
+/// Runs [`Node::sync`] now and then every `every`, on a thread of its own.
+pub fn spawn_sync(node: Arc<Node>, every: Duration) {
+    std::thread::spawn(move || loop {
+        node.sync();
+        std::thread::sleep(every);
+    });
+}
+
+/// How long one direct dial may take before the next address (or a relay) is tried. On a LAN a
+/// refused or unreachable address fails at once; a dead one should not hold up the rest.
+pub const DIRECT_TIMEOUT: Duration = Duration::from_millis(1500);
+
+/// Dials a peer: every address it has (saved first) with every key the pair may be using, then
+/// whatever `resolve` finds. Returns the address that worked.
+pub fn dial_peer(
+    peer: &Peer,
+    resolve: Option<&FindPeer>,
+    timeout: Duration,
+) -> Result<(String, Client)> {
+    let keys = peer.keys();
+    let try_addr = |addr: &str| -> Result<Client> {
+        let mut last = anyhow!("no usable key");
+        for k in &keys {
+            match Client::connect(addr, k, timeout) {
+                Ok(c) => return Ok(c),
+                Err(e) => last = e,
+            }
+        }
+        Err(last)
+    };
+    let mut first_err = None;
+    let addrs = Peers::dial_addrs(peer);
+    for addr in &addrs {
+        match try_addr(addr) {
+            Ok(c) => return Ok((addr.clone(), c)),
+            Err(e) => {
+                first_err.get_or_insert(e);
+            }
+        }
+    }
+    if let Some(resolve) = resolve {
+        for addr in resolve(&peer.id, FALLBACK_BROWSE) {
+            if !addrs.contains(&addr) {
+                if let Ok(c) = try_addr(&addr) {
+                    return Ok((addr, c));
+                }
+            }
+        }
+    }
+    Err(first_err.unwrap_or_else(|| anyhow!("{} has no address to call it on", peer.name)))
+}
+
+/// Calls `op` on a paired device: directly if it answers, otherwise through another paired device
+/// that can reach it (`mesh.relay`). This is what lets a phone on Wi-Fi talk to a server only the
+/// PC can see.
+pub fn call_peer(store: &Store, who: &str, op: &str, body: Value, resolve: Resolver) -> Result<Value> {
+    let err = match connect_peer_with(store, who, resolve) {
+        Ok((_, mut client)) => return client.call(op, body),
+        Err(e) => e,
+    };
+    let peers = Peers::load(store)?;
+    let target = peers.get(who).cloned().ok_or_else(|| anyhow!("no paired device called {who}"))?;
+    for via in peers.peers.iter().filter(|p| p.id != target.id) {
+        let Ok((_, mut client)) = dial_peer(via, None, DIRECT_TIMEOUT) else { continue };
+        match client.call("mesh.relay", json!({"to": target.id, "op": op, "body": body})) {
+            Ok(v) => return Ok(v),
+            // This one cannot reach it either; try the next.
+            Err(e) if format!("{e:#}").contains("not paired with")
+                || format!("{e:#}").contains("connecting to")
+                || format!("{e:#}").contains("no address") => continue,
+            Err(e) => return Err(e.context(format!("through {}", via.name))),
+        }
+    }
+    Err(err)
 }
 
 /// A connection to one peer, for making requests.
@@ -273,9 +481,14 @@ pub fn join(store: &Store, me: &Device, link: &str) -> Result<Peer> {
         &key,
         Some(addr),
     );
-    let mut peers = Peers::load(store)?;
-    peers.upsert(peer.clone());
-    peers.save(store)?;
+    let intros: Vec<Intro> =
+        serde_json::from_value(answer["introductions"].clone()).unwrap_or_default();
+    Peers::update(store, |peers| {
+        peers.upsert(peer.clone());
+        for i in &intros {
+            peers.apply(i, &me.id);
+        }
+    })?;
     Ok(peer)
 }
 
@@ -338,18 +551,34 @@ pub fn connect_peer_with(store: &Store, who: &str, resolve: Resolver) -> Result<
         .get(who)
         .cloned()
         .ok_or_else(|| anyhow!("no paired device called {who}"))?;
-    let psk = peer.psk()?;
-    let (addr, client) = dial_with_fallback(&peer.id, peer.addr.as_deref(), Some(resolve), |a| {
-        Client::connect(a, &psk, Duration::from_secs(5))
+    let keys = peer.keys();
+    // The saved address first; then the others it reported (LAN, Tailscale), then the network.
+    let alts: Vec<String> = Peers::dial_addrs(&peer).into_iter().skip(1).collect();
+    let mut resolve_all = |id: &str, t: Duration| -> Vec<String> {
+        let mut out = alts.clone();
+        out.extend(resolve(id, t));
+        out
+    };
+    let saved = Peers::dial_addrs(&peer).into_iter().next();
+    let (addr, client) = dial_with_fallback(&peer.id, saved.as_deref(), Some(&mut resolve_all), |a| {
+        let mut last = anyhow!("no usable key");
+        for k in &keys {
+            match Client::connect(a, k, DIRECT_TIMEOUT) {
+                Ok(c) => return Ok(c),
+                Err(e) => last = e,
+            }
+        }
+        Err(last)
     })
     .with_context(|| format!("could not reach {}", peer.name))?;
     if peer.addr.as_deref() != Some(addr.as_str()) {
         // Re-read before writing, so a change made meanwhile (a forget) is not undone.
-        let mut fresh = Peers::load(store)?;
-        if let Some(p) = fresh.get_mut(&peer.id) {
-            p.addr = Some(addr.clone());
-            fresh.save(store)?;
-        }
+        let a = addr.clone();
+        Peers::update(store, |fresh| {
+            if let Some(p) = fresh.get_mut(&peer.id) {
+                p.addr = Some(a);
+            }
+        })?;
         peer.addr = Some(addr);
     }
     Ok((peer, client))
@@ -363,15 +592,13 @@ pub fn set_peer_addr(store: &Store, who: &str, host: &str) -> Result<(Peer, Stri
         bail!("that is not an address");
     }
     let addr = normalize_addr(host)?;
-    let mut peers = Peers::load(store)?;
-    let id = peers
-        .get(who)
-        .map(|p| p.id.clone())
-        .ok_or_else(|| anyhow!("no paired device called {who}"))?;
-    let p = peers.get_mut(&id).expect("just found");
-    p.addr = Some(addr.clone());
-    let peer = p.clone();
-    peers.save(store)?;
+    let peer = Peers::update(store, |peers| {
+        let id = peers.get(who).map(|p| p.id.clone())?;
+        let p = peers.get_mut(&id)?;
+        p.addr = Some(addr.clone());
+        Some(p.clone())
+    })?
+    .ok_or_else(|| anyhow!("no paired device called {who}"))?;
     Ok((peer, addr))
 }
 
@@ -548,5 +775,63 @@ mod tests {
         assert!(peers.forget(&c_dev.id));
         peers.save(&s_store).unwrap();
         assert!(connect_peer(&c_store, "server").is_err());
+    }
+
+    fn listen(store: &Store, dev: &Device) -> (Arc<Node>, u16) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let mut dev = dev.clone();
+        dev.addrs = vec![format!("127.0.0.1:{port}")];
+        let node = Arc::new(Node::new(store.clone(), dev).unwrap());
+        let n = node.clone();
+        std::thread::spawn(move || serve(n, listener, Arc::new(Echo)));
+        (node, port)
+    }
+
+    #[test]
+    fn joining_one_member_joins_the_mesh_and_relay_reaches_the_rest() {
+        let (a_store, a_dev) = node("intro-server", Kind::Server);
+        let (b_store, b_dev) = node("intro-pc", Kind::Pc);
+        let (c_store, c_dev) = node("intro-phone", Kind::Phone);
+        let (a, a_port) = listen(&a_store, &a_dev);
+        let (b, b_port) = listen(&b_store, &b_dev);
+
+        // The PC joins the server, then the phone joins the PC: one pairing each, by hand.
+        join(&b_store, &b.device, &a.invite_link("127.0.0.1", a_port).unwrap()).unwrap();
+        join(&c_store, &c_dev, &b.invite_link("127.0.0.1", b_port).unwrap()).unwrap();
+
+        // The phone was introduced to the server in the pairing answer...
+        let c_peers = Peers::load(&c_store).unwrap();
+        assert!(c_peers.get("intro-server").is_some(), "the phone was not introduced to the server");
+        // ...and the server hears about the phone from the PC.
+        let mut found = false;
+        for _ in 0..50 {
+            if Peers::load(&a_store).unwrap().get("intro-phone").is_some() {
+                found = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(found, "the server was never introduced to the phone");
+
+        // Direct: the phone calls the server with the introduced key.
+        let mut none = |_: &str, _: Duration| Vec::new();
+        let v = call_peer(&c_store, "intro-server", "echo", json!(1), &mut none).unwrap();
+        assert_eq!(v["from"], "intro-phone");
+
+        // Relay: the phone cannot reach the server (a dead address), the PC can.
+        set_peer_addr(&c_store, "intro-server", "127.0.0.1:1").unwrap();
+        let mut peers = Peers::load(&c_store).unwrap();
+        let id = peers.get("intro-server").unwrap().id.clone();
+        peers.get_mut(&id).unwrap().alt_addrs.clear();
+        peers.save(&c_store).unwrap();
+        let v = call_peer(&c_store, "intro-server", "echo", json!(2), &mut none).unwrap();
+        assert_eq!(v["from"], "intro-pc", "the call should have come through the PC");
+
+        // Relays cannot be chained or used for mesh operations.
+        let (_, mut to_pc) = connect_peer(&c_store, "intro-pc").unwrap();
+        assert!(to_pc
+            .call("mesh.relay", json!({"to": id, "op": "mesh.sync", "body": null}))
+            .is_err());
     }
 }

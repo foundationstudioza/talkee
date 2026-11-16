@@ -95,7 +95,14 @@ fn run(store: Store, device: Device, port: u16) -> Result<()> {
             None
         }
     };
-    let node = Arc::new(Node::new(store, device)?);
+    let mut device = device;
+    // Every way to reach this machine (LAN, Tailscale), handed to the devices it is introduced to.
+    device.addrs = talkee_discovery::mesh::local_dial_addrs(port);
+    let mut node = Node::new(store, device)?;
+    node.resolver = Some(Box::new(talkee_discovery::mesh::resolve_mesh_peer));
+    let node = Arc::new(node);
+    // Introductions and addresses travel at every sync, so devices stay joined up by themselves.
+    node::spawn_sync(node.clone(), std::time::Duration::from_secs(60));
     node::serve(node, listener, Arc::new(Server))
 }
 

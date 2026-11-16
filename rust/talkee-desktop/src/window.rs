@@ -655,6 +655,8 @@ struct DevicesPanel {
     /// The answer of a pairing under way: empty while it runs.
     pairing: Option<PairingSlot>,
     message: Option<(String, Color32)>,
+    /// An invite on screen for a phone to scan, and when it was made (it works for 15 minutes).
+    invite_qr: Option<(usize, Vec<bool>, Instant)>,
 }
 
 type PairingSlot = Arc<Mutex<Option<Result<crate::mesh::PeerRow, String>>>>;
@@ -663,7 +665,7 @@ impl DevicesPanel {
     fn load() -> Self {
         let devices = crate::mesh::Devices::open().ok();
         let rows = devices.as_ref().map(|d| d.list()).unwrap_or_default();
-        DevicesPanel { devices, rows, read: Instant::now(), link: String::new(), pairing: None, message: None }
+        DevicesPanel { devices, rows, read: Instant::now(), link: String::new(), pairing: None, message: None, invite_qr: None }
     }
 
     /// Picks up a finished pairing, and re-reads the list every few seconds: the app updates
@@ -717,8 +719,9 @@ fn devices_card(ui: &mut egui::Ui, panel: &mut DevicesPanel) {
     ui.add_space(4.0);
     ui.label(
         egui::RichText::new(
-            "Other computers paired with this PC, such as a Linux server running talkeed. \
-             Run talkeed pair on the server and paste the link it prints.",
+            "Your Talkee devices. Pair a device with any one of them and it joins all of them; \
+             when two cannot reach each other directly, another one relays. For a server, run \
+             talkeed pair there and paste the link it prints.",
         )
         .color(DIM)
         .size(12.5),
@@ -794,8 +797,17 @@ fn devices_card(ui: &mut egui::Ui, panel: &mut DevicesPanel) {
             if let Some(d) = panel.devices.as_ref() {
                 panel.message = Some(match d.invite() {
                     Ok(link) => {
+                        if let Ok(code) = QrCode::new(link.as_bytes()) {
+                            let modules = code.to_colors().into_iter().map(|c| c == Module::Dark).collect();
+                            panel.invite_qr = Some((code.width(), modules, Instant::now()));
+                        }
                         ui.ctx().copy_text(link);
-                        ("Link copied. Paste it on the other device within 15 minutes.".to_string(), GREEN)
+                        (
+                            "Scan this with the phone, or paste the copied link on another computer. It \
+                             works once, for 15 minutes, and that device joins every device paired here."
+                                .to_string(),
+                            GREEN,
+                        )
                     }
                     Err(e) => (e.to_string(), RED),
                 });
@@ -805,6 +817,18 @@ fn devices_card(ui: &mut egui::Ui, panel: &mut DevicesPanel) {
     if let Some((text, colour)) = &panel.message {
         ui.add_space(6.0);
         ui.label(egui::RichText::new(text.as_str()).color(*colour).size(12.0));
+    }
+    if panel.invite_qr.as_ref().is_some_and(|(_, _, made)| made.elapsed() > Duration::from_secs(15 * 60)) {
+        panel.invite_qr = None;
+    }
+    if let Some((width, modules, _)) = &panel.invite_qr {
+        ui.add_space(8.0);
+        ui.vertical_centered(|ui| qr(ui, *width, modules));
+        ui.vertical_centered(|ui| {
+            if ui.button("Hide code").clicked() {
+                panel.invite_qr = None;
+            }
+        });
     }
 }
 

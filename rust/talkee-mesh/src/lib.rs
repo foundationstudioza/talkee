@@ -16,7 +16,7 @@ pub mod wire;
 
 pub use identity::{Capability, Device, Kind};
 pub use node::{Client, Handler, Request, Response};
-pub use peers::{Invite, Peer, Peers};
+pub use peers::{Intro, Invite, Peer, Peers};
 
 /// The mesh's TCP port. Beside the microphone's 47800/47801, so one firewall rule range covers both.
 pub const MESH_PORT: u16 = 47810;

@@ -239,27 +239,57 @@ class MeshPeer(
     val caps: List<String>,
     val key: ByteArray,
     val addr: String,
+    /** Other addresses it reported (LAN, Tailscale), tried after [addr]. */
+    val altAddrs: List<String> = emptyList(),
+    /** The key an introduction replaced, still tried so a half-updated pair keeps working. */
+    val oldKey: ByteArray? = null,
 ) {
-    /** What Dart may see: everything except the key. */
+    /** What Dart may see: everything except the keys. */
     fun toPublicJson(): JSONObject = JSONObject()
         .put("id", id).put("name", name).put("kind", kind)
         .put("caps", JSONArray(caps)).put("addr", addr)
 
     fun toStoredJson(): JSONObject = toPublicJson()
-        .put("key", Base64.getUrlEncoder().withoutPadding().encodeToString(key))
+        .put("key", b64(key))
+        .put("alt_addrs", JSONArray(altAddrs))
+        .also { o -> oldKey?.let { o.put("old_key", b64(it)) } }
+
+    /** Every address worth dialling, saved one first. */
+    fun dialAddrs(): List<String> = (listOf(addr) + altAddrs).filter { it.isNotBlank() }.distinct()
+
+    /** Every key the pair may be using, newest first. */
+    fun keys(): List<ByteArray> = listOfNotNull(key, oldKey)
 
     companion object {
+        private fun b64(b: ByteArray) = Base64.getUrlEncoder().withoutPadding().encodeToString(b)
+
+        private fun key(text: String?): ByteArray? = try {
+            text?.takeIf { it.isNotEmpty() }?.let { Base64.getUrlDecoder().decode(it) }
+                ?.takeIf { it.size == Crypto.PSK_LEN }
+        } catch (_: IllegalArgumentException) {
+            null
+        }
+
+        private fun strings(a: JSONArray?): List<String> =
+            a?.let { (0 until it.length()).map { i -> it.optString(i) } }?.filter { it.isNotBlank() } ?: emptyList()
+
         fun fromStoredJson(o: JSONObject): MeshPeer? {
-            val key = try {
-                Base64.getUrlDecoder().decode(o.optString("key"))
-            } catch (_: IllegalArgumentException) {
-                return null
-            }
-            if (key.size != Crypto.PSK_LEN) return null
+            val key = key(o.optString("key")) ?: return null
             val id = o.optString("id").takeIf { it.isNotEmpty() } ?: return null
-            val caps = o.optJSONArray("caps")?.let { a -> (0 until a.length()).map { a.optString(it) } }
-                ?: emptyList()
-            return MeshPeer(id, o.optString("name", id), o.optString("kind", "pc"), caps, key, o.optString("addr"))
+            return MeshPeer(
+                id, o.optString("name", id), o.optString("kind", "pc"), strings(o.optJSONArray("caps")),
+                key, o.optString("addr"), strings(o.optJSONArray("alt_addrs")), key(o.optString("old_key")),
+            )
+        }
+
+        /** An introduction from a peer: "here is a device in the mesh, and your key with it". */
+        fun fromIntro(o: JSONObject): MeshPeer? {
+            val key = key(o.optString("key")) ?: return null
+            val id = o.optString("id").takeIf { it.length == 32 } ?: return null
+            return MeshPeer(
+                id, o.optString("name", id).take(64), o.optString("kind", "pc"), strings(o.optJSONArray("caps")),
+                key, if (o.isNull("addr")) "" else o.optString("addr"), strings(o.optJSONArray("alt_addrs")),
+            )
         }
     }
 }
@@ -279,6 +309,32 @@ object MeshPeers {
     /** Replaces any peer with the same id, so joining again does not leave a stale key behind. */
     fun upsert(peers: List<MeshPeer>, peer: MeshPeer): List<MeshPeer> =
         peers.filter { it.id != peer.id } + peer
+
+    /**
+     * Takes in introductions. A device already known keeps its old key as a fallback (the same rule
+     * as the Rust side), so a pair where only one side has heard of the new key still connects.
+     */
+    fun apply(peers: List<MeshPeer>, intros: List<MeshPeer>, myId: String): List<MeshPeer> {
+        var out = peers
+        for (i in intros) {
+            if (i.id == myId) continue
+            val known = out.firstOrNull { it.id == i.id }
+            out = when {
+                known == null -> out + i
+                known.key.contentEquals(i.key) -> out
+                else -> upsert(out, MeshPeer(
+                    known.id, i.name, i.kind, i.caps, i.key,
+                    known.addr.ifBlank { i.addr }, (known.altAddrs + i.altAddrs).distinct(), known.key,
+                ))
+            }
+        }
+        return out
+    }
+
+    fun intros(body: JSONObject?): List<MeshPeer> {
+        val a = body?.optJSONArray("introductions") ?: return emptyList()
+        return (0 until a.length()).mapNotNull { a.optJSONObject(it)?.let(MeshPeer::fromIntro) }
+    }
 
     fun host(addr: String): String =
         if (addr.startsWith("[")) addr.substringBefore("]").removePrefix("[") else addr.substringBeforeLast(':')
@@ -306,10 +362,12 @@ object MeshClient {
      * The key in the invite is single-use; the answer carries the pair's real key, which is what is
      * kept. Throws [Mesh.MeshException] or an I/O exception with a sentence worth showing.
      */
-    fun join(link: PairLink, myId: String, myName: String): MeshPeer {
+    fun join(link: PairLink, myId: String, myName: String): Pair<MeshPeer, List<MeshPeer>> {
         val channel = Mesh.dial(link.host, link.controlPort, link.key)
         channel.use { ch ->
             val answer = ch.call("pair.complete", deviceJson(myId, myName)).getJSONObject("body")
+            // Joining one device joins the mesh: the answer introduces every device it knows.
+            val intros = MeshPeers.intros(answer)
             val them = answer.getJSONObject("device")
             val key = try {
                 Base64.getUrlDecoder().decode(answer.getString("key"))
@@ -321,6 +379,8 @@ object MeshClient {
             if (id.length != 32) throw Mesh.MeshException("the other device sent an unusable id")
             val caps = them.optJSONArray("caps")?.let { a -> (0 until a.length()).map { a.optString(it) } }
                 ?: emptyList()
+            val addrs = them.optJSONArray("addrs")?.let { a -> (0 until a.length()).map { a.optString(it) } }
+                ?: emptyList()
             return MeshPeer(
                 id = id,
                 name = them.optString("name", link.name).ifBlank { link.name },
@@ -328,14 +388,67 @@ object MeshClient {
                 caps = caps,
                 key = key,
                 addr = MeshPeers.addr(link.host, link.controlPort),
-            )
+                altAddrs = addrs,
+            ) to intros
         }
     }
 
-    /** Calls one operation on a peer and returns its answer body as JSON text. */
-    fun call(peer: MeshPeer, op: String): String {
-        Mesh.dial(MeshPeers.host(peer.addr), MeshPeers.port(peer.addr), peer.key).use { ch ->
-            return ch.call(op).opt("body")?.toString() ?: "null"
+    /** How long one direct dial may take before the next address, or a relay, is tried. */
+    private const val DIRECT_MS = 1500
+
+    /** Dials a peer on every address it has, with every key the pair may be using. */
+    fun dial(peer: MeshPeer): Mesh.Channel {
+        var last: Exception = Mesh.MeshException("no address to call it on")
+        for (a in peer.dialAddrs()) for (k in peer.keys()) {
+            try {
+                return Mesh.dial(MeshPeers.host(a), MeshPeers.port(a), k, connectTimeoutMs = DIRECT_MS)
+            } catch (e: Exception) {
+                last = e
+            }
         }
+        throw last
+    }
+
+    /**
+     * Calls one operation on a peer and returns its answer body as JSON text: directly if it
+     * answers, otherwise through another device that can reach it (`mesh.relay`). That is how a phone
+     * on Wi-Fi reaches a server only the PC can see.
+     */
+    fun call(peer: MeshPeer, op: String, all: List<MeshPeer> = emptyList()): String {
+        val direct = try {
+            dial(peer)
+        } catch (e: Exception) {
+            for (via in all.filter { it.id != peer.id }) {
+                try {
+                    dial(via).use { ch ->
+                        val body = JSONObject().put("to", peer.id).put("op", op).put("body", JSONObject.NULL)
+                        return ch.call("mesh.relay", body).opt("body")?.toString() ?: "null"
+                    }
+                } catch (_: Exception) {
+                    // That one cannot reach it either.
+                }
+            }
+            throw e
+        }
+        direct.use { ch -> return ch.call(op).opt("body")?.toString() ?: "null" }
+    }
+
+    /**
+     * One round with every peer that answers: say who we are and collect introductions waiting for
+     * this phone (devices that joined the mesh since). Returns the updated peer list.
+     */
+    fun sync(peers: List<MeshPeer>, myId: String, myName: String): List<MeshPeer> {
+        var out = peers
+        for (p in peers) {
+            try {
+                dial(p).use { ch ->
+                    val answer = ch.call("mesh.sync", deviceJson(myId, myName)).optJSONObject("body")
+                    out = MeshPeers.apply(out, MeshPeers.intros(answer), myId)
+                }
+            } catch (_: Exception) {
+                // Not reachable now; next time.
+            }
+        }
+        return out
     }
 }
